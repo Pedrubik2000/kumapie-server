@@ -8,7 +8,7 @@ Three parts, all settings in `config.toml` `[feed]`:
 
 | part | what | runs with |
 |---|---|---|
-| `tools\feed\feed.py build` | groups subtitle cues into clips, parses them with `morphemizer.py` (spaCy), cuts them with ffmpeg into `state\feed\clips\`, indexes them in `state\feed\feed.db` | `.venv` |
+| `tools\feed\feed.py build` | groups subtitle cues into clips, parses them with `morphemizer.py` (spaCy), indexes them in `state\feed\feed.db` (nothing is cut) | `.venv` |
 | `tools\feed\feed.py gloss` | one Claude request per clip: every word's meaning in that clip (`prompts\gloss_v1.md`, the v20_en style) | `.venv`; key in `.env` (`llm.py`) |
 | `services\feed\server.py` (dojo-feed, 127.0.0.1:8769) | the page and `/api/feed`; known words from kumapie (`known.py`) | `.venv`, Windows service |
 
@@ -42,7 +42,8 @@ The service picks up a new `feed.db` within a minute; no restart needed.
 - `pad` (0.3 s) is added on both sides, never into a neighbouring clip's cue. The `.srt` cues already
   start 0.5 s early (srt_spaced LEAD_IN).
 - English: the `.en.srt` cues whose middle falls inside the clip, without the `(German)` hints.
-- Video: H.264 480p crf 26, AAC 96k, `+faststart`, so every clip starts on a keyframe and streams at once.
+- Video: none of its own (since 2026-10-13). `/clips/<id>.mp4` streams the clip's episode with HTTP Range;
+  the page starts it at the clip's start (`#t=`) and stops or loops it at the clip's end. No volume levelling.
 
 ## Level and known words
 
