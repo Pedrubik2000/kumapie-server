@@ -2,7 +2,7 @@
 # (C:\dojo on Windows). Set DOJO_ROOT to point somewhere else. Secrets go in .env, not here.
 
 [paths]
-library = "library"   # source media, one folder per person (library/<person>/{anime,shows,movies,youtube,novels}/)
+library = "library"   # source media, one folder per person (library/<person>/{anime,shows,movies,youtube,visual_novels}/)
 state   = "state"     # service data: state/feed, state/dicts, state/morphs
 work    = "work"      # scratch and logs (work/logs/dojo-feed.log)
 archive = "archive"   # episodes removed from a device (sync.py moves them here)

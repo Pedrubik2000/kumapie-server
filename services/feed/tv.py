@@ -71,7 +71,7 @@ DEVICE_SEEN = STATE / "device_seen.json"
 # .jpg (its poster). Looked up once per show in the background; "Fix match" on a phone replaces it (POST /api/tv/meta).
 META = STATE / "meta"
 # Home category -> meta.py kind; YouTube channels and reels: the channel's picture (found from one of its video links)
-META_KINDS = {"anime": "anime", "shows": "shows", "movies": "movies", "novels": "novels", "youtube": "youtube", "reels": "youtube"}
+META_KINDS = {"anime": "anime", "shows": "shows", "movies": "movies", "visual_novels": "visual_novels", "youtube": "youtube", "reels": "youtube"}
 ID = r"((?:local-)?[0-9a-f]{12})"
 LANG = {key: lang for libs in sync.PEOPLE.values() for lang, key in libs.items()}  # library -> its language
 RESCAN = 60  # seconds between looks for new .kumapie.json files
@@ -82,7 +82,7 @@ ROUTES = {
     "poster": re.compile(r"^/api/tv/poster/([a-z0-9_]+)\.jpg$"),
     "file": re.compile(rf"^/api/tv/file/{ID}/(bgm/[\w.-]+\.ogg|img/\w+\.webp|mask/[\w.-]+\.png)$"),
 }
-KINDS = ["anime", "shows", "movies", "youtube", "novels", "reels"]  # order of the rows on Home (reels: feed only)
+KINDS = ["anime", "shows", "movies", "youtube", "visual_novels", "reels"]  # order of the rows on Home (reels: feed only)
 
 TV_SCHEMA = """
 create table if not exists progress (episode text primary key, pos real, updated text);
