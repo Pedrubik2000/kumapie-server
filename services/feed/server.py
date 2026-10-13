@@ -7,7 +7,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   /                       the page (static/), installable to the home screen
   POST /api/feed          {"n": 10, "exclude": [ids shown]} -> random i+0 / i+1 clips with lines, glosses and
                           per-line definitions ("defs", as the TV's scenes)
-  /clips/<id>.mp4|.jpg    clip video and poster, with HTTP Range (phones need it for video)
+  /clips/<id>.mp4         the clip's episode video, with HTTP Range (the page plays start..end of it)
   /api/tts?w=<word>       the word read by edge-tts (only words in the feed), cached in state\\feed\\tts\\
   POST /api/tv/known_words  {"person", "lang", "words"}: the words kumapie shows as known (known.py)
   POST /api/tv/device_seen  {"person", "seen", "unwatched"}: what the person's phones count as seen (tv.py)
@@ -46,10 +46,9 @@ F = cfg.raw["feed"]
 PORT = cfg.services["feed_port"]
 STATE = cfg.state / "feed"
 DB = STATE / "feed.db"
-CLIPS = STATE / "clips"
 TTS = STATE / "tts"
 STATIC = Path(__file__).parent / "static"
-CLIP_ID = re.compile(r"^/clips/([0-9a-f]{12})\.(mp4|jpg)$")
+CLIP_ID = re.compile(r"^/clips/([0-9a-f]{12})\.mp4$")
 
 lock = threading.Lock()
 feed = {"clips": {}, "words": set(), "status": frozenset(), "levels": {}, "db_mtime": None}
@@ -96,7 +95,7 @@ def load_db():
         clips = {}
         for cid, title, source, start, end, english in db.execute(
                 "select id, title, source, start, end, english from clips where built = 1"):
-            clips[cid] = {"id": cid, "title": title, "at": mmss(start), "source": source,
+            clips[cid] = {"id": cid, "title": title, "at": mmss(start), "source": source, "start": start, "end": end,
                           "english": english, "cues": [], "infl": set(), "glosses": glosses.get(cid, {})}
         words = set()
         for cid, s, e, text, toks in db.execute(
@@ -110,9 +109,8 @@ def load_db():
                 if infl:
                     c["infl"].add(infl)
                     words.add(surface.lower())
-        row = db.execute("select value from meta where key = 'encode'").fetchone()
         tv.load(db)
-        return clips, words, row[0] if row else "1"
+        return clips, words
     finally:
         db.close()
 
@@ -131,9 +129,9 @@ def reload():
     m = mtime(DB)
     if m and m != feed["db_mtime"]:
         try:
-            clips, words, encode = load_db()
+            clips, words = load_db()
             with lock:
-                feed.update(clips=clips, words=words, encode=encode, db_mtime=m)
+                feed.update(clips=clips, words=words, db_mtime=m)
             changed = True
         except sqlite3.Error as e:
             log(f"could not read {DB}: {e}")
@@ -202,7 +200,7 @@ def pick(n, exclude):
             words = {i: {"s": "k" if i in st else "u",
                          "g": c["glosses"].get(i) or tv.word_gloss.get(i, "")}
                      for i in infl}
-            out.append({"id": cid, "v": feed["encode"], "title": c["title"], "at": c["at"], "english": c["english"],
+            out.append({"id": cid, "start": c["start"], "end": c["end"], "title": c["title"], "at": c["at"], "english": c["english"],
                         "level": levels[cid], "cues": c["cues"], "words": words, "defs": defs})
         return {"clips": out, "wrapped": wrapped,
                 "pool": {"i0": sum(1 for v in levels.values() if v == 0),
@@ -262,9 +260,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         m = CLIP_ID.match(path)
         if m:
-            f = CLIPS / f"{m.group(1)}.{m.group(2)}"
-            if f.is_file():
-                return self.send_file(f, "video/mp4" if m.group(2) == "mp4" else "image/jpeg", cache=True)
+            with lock:
+                c = feed["clips"].get(m.group(1))
+            f = cfg.library(F["person"]) / c["source"] if c else None
+            if f and f.is_file():  # the whole episode: the page seeks to the clip's start and stops at its end
+                return self.send_file(f, "video/mp4", cache=False)
             return self.send_error(404)
         if path == "/api/tts":
             query = urllib.parse.parse_qs(url.query)

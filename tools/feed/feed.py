@@ -1,7 +1,7 @@
-"""German feed: cut Pedro's library into short clips and gloss their words (plan: german_feed_plan.md).
+"""German feed: split Pedro's library into short clips and gloss their words (plan: german_feed_plan.md).
 
-  feed.py build [--only TEXT]       group subtitle cues into 5-15 s clips, parse them, cut them with
-                                    ffmpeg into state\\feed\\clips\\, index them in state\\feed\\feed.db
+  feed.py build [--only TEXT]       group subtitle cues into 5-15 s clips, parse them, index them in
+                                    state\\feed\\feed.db (nothing is cut: the page plays the episode start..end)
   feed.py gloss --estimate          clips and words still without glosses, and what glossing them costs
   feed.py gloss --limit 20          gloss a few clips (random) and print the result, to check the prompt
   feed.py gloss                     gloss every clip that has none yet (paid: ask Pedro first)
@@ -44,7 +44,6 @@ from dojo import cfg  # noqa: E402
 F = cfg.raw["feed"]
 PERSON = F["person"]
 STATE = cfg.state / "feed"
-CLIPS = STATE / "clips"
 DB = STATE / "feed.db"
 PROMPT = Path(__file__).parent / "prompts" / "gloss_v1.md"
 WORD = re.compile(r"\w+")
@@ -260,62 +259,6 @@ def make_parser():
 
 # ---------------------------------------------------------------- cutting
 
-def ffmpeg() -> str:
-    return os.environ.get("FFMPEG") or cfg.which("ffmpeg")
-
-
-# Bump when the clip encoding changes: build re-cuts every clip, and the service adds ?v=<this> to clip
-# URLs so phones don't keep the old copies (they are cached as immutable).
-# 2: Firefox on Android froze the picture of clips with one keyframe (only keyframes were drawn), so:
-#    no B-frames, Main profile, a keyframe every 2 s, both streams starting at 0 (no edit list).
-# 3: every clip's audio loudness-normalized to [feed] loudness (the word audio's level): the YouTube
-#    video was ~9 dB louder than the word audio, anime and the movie 3-10 dB quieter.
-ENCODE = 3
-
-
-def loudness_filter(clip: Clip, library: Path) -> str:
-    """Two-pass EBU R128 (as tools
-ormalize_audio.py): measure the clip's audio, then a linear gain
-    to [feed] loudness (true peak -1.5 dB). Silent clips are left alone."""
-    I, tp, lra = F.get("loudness", -22), -1.5, 11
-    r = subprocess.run(
-        [ffmpeg(), "-hide_banner", "-ss", f"{clip.start:.3f}", "-i", str(library / clip.source),
-         "-t", f"{clip.end - clip.start:.3f}", "-vn", "-sn", "-dn", "-map", "0:a:0?",
-         "-af", f"loudnorm=I={I}:TP={tp}:LRA={lra}:print_format=json", "-f", "null", "-"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace")
-    err = r.stderr
-    try:
-        stats = json.loads(err[err.rindex("{"):err.rindex("}") + 1])
-    except ValueError:
-        return "asetpts=PTS-STARTPTS"
-    if stats.get("input_i") in (None, "-inf"):
-        return "asetpts=PTS-STARTPTS"
-    return (f"asetpts=PTS-STARTPTS,loudnorm=I={I}:TP={tp}:LRA={lra}:linear=true"
-            f":measured_I={stats['input_i']}:measured_TP={stats['input_tp']}"
-            f":measured_LRA={stats['input_lra']}:measured_thresh={stats['input_thresh']}"
-            f":offset={stats['target_offset']}")
-
-
-def cut(clip: Clip, library: Path) -> str:
-    """Always encodes: callers only pass clips that are not built (new, or an older ENCODE)."""
-    mp4, jpg = CLIPS / f"{clip.id}.mp4", CLIPS / f"{clip.id}.jpg"
-    tmp = CLIPS / f"{clip.id}.part.mp4"
-    subprocess.run(
-        [ffmpeg(), "-v", "error", "-y", "-ss", f"{clip.start:.3f}", "-i", str(library / clip.source),
-         "-t", f"{clip.end - clip.start:.3f}", "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn",
-         "-vf", f"scale=-2:{F['height']},setpts=PTS-STARTPTS", "-af", loudness_filter(clip, library), "-ar", "48000",
-         "-c:v", "libx264", "-profile:v", "main", "-level", "3.1", "-bf", "0", "-g", "48", "-keyint_min", "24",
-         "-crf", str(F["crf"]), "-preset", "veryfast", "-pix_fmt", "yuv420p",
-         "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart", str(tmp)],
-        check=True, capture_output=True)
-    tmp.replace(mp4)
-    tmpj = CLIPS / f"{clip.id}.part.jpg"
-    subprocess.run([ffmpeg(), "-v", "error", "-y", "-i", str(mp4), "-frames:v", "1", "-q:v", "5", str(tmpj)],
-                   check=True, capture_output=True)
-    tmpj.replace(jpg)
-    return clip.id
-
-
 # ---------------------------------------------------------------- build
 
 def cmd_build(args) -> None:
@@ -334,11 +277,7 @@ def cmd_build(args) -> None:
     if db.execute("select value from meta where key = 'parse'").fetchone() != (settings,):
         db.execute("delete from cues")  # morphemizer settings changed: parse everything again
         db.execute("insert or replace into meta values ('parse', ?)", (settings,))
-    if db.execute("select value from meta where key = 'encode'").fetchone() != (str(ENCODE),):
-        db.execute("update clips set built = 0")  # re-cut everything; the service serves built clips only
-        db.execute("insert or replace into meta values ('encode', ?)", (str(ENCODE),))
-        db.commit()
-        log(f"clip encoding changed to version {ENCODE}: re-cutting every clip")
+    db.execute("update clips set built = 1")  # nothing to cut: the page plays the episode from start to end
     have = {r[0] for r in db.execute("select distinct clip_id from cues")}
     known = {r[0] for r in db.execute("select id from clips")}
 
@@ -350,8 +289,6 @@ def cmd_build(args) -> None:
     for cid in gone:
         for t in ("clips where id", "cues where clip_id") + (() if cid in scene_ids else ("glosses where clip_id",)):
             db.execute(f"delete from {t} = ?", (cid,))
-        for ext in ("mp4", "jpg"):
-            (CLIPS / f"{cid}.{ext}").unlink(missing_ok=True)
     if gone:
         log(f"removed {len(gone)} clips that no longer exist")
 
@@ -365,7 +302,7 @@ def cmd_build(args) -> None:
             db.execute("insert or replace into clips (id, source, title, start, end, english, words, built)"
                        " values (?, ?, ?, ?, ?, ?, ?, ?)",
                        (c.id, c.source.relative_to(library).as_posix(), c.title, c.start, c.end, c.english,
-                        c.words, int((CLIPS / f"{c.id}.mp4").exists() and (CLIPS / f"{c.id}.jpg").exists())))
+                        c.words, 1))
             db.executemany("insert or replace into cues values (?, ?, ?, ?, ?, ?)",
                            [(c.id, i, round(cue.start - c.start, 3), round(cue.end - c.start, 3), cue.text,
                              json.dumps(toks, ensure_ascii=False))
@@ -375,42 +312,8 @@ def cmd_build(args) -> None:
             db.execute("update clips set title = ?, english = ? where id = ?", (c.title, c.english, c.id))
     db.commit()
 
-    unbuilt = [wanted[r[0]] for r in db.execute("select id from clips where built = 0") if r[0] in wanted]
-    try:  # today's feed clips first, so the page has them back soonest
-        pool = in_pool(db)
-        unbuilt.sort(key=lambda c: c.id not in pool)
-    except (OSError, ValueError):
-        pass
-    CLIPS.mkdir(parents=True, exist_ok=True)
-    for f in CLIPS.glob("*.part.*"):
-        f.unlink()
-    log(f"cutting {len(unbuilt)} clips with {F['jobs']} ffmpeg jobs")
-    done = failed = 0
-    start = time.time()
-    with ThreadPoolExecutor(F["jobs"]) as pool:
-        futures = {pool.submit(cut, c, library): c for c in unbuilt}
-        for fut in as_completed(futures):
-            c = futures[fut]
-            try:
-                fut.result()
-                db.execute("update clips set built = 1 where id = ?", (c.id,))
-                done += 1
-            except subprocess.CalledProcessError as e:
-                failed += 1
-                log(f"ffmpeg failed for {c.id} ({c.source.name} {c.start:.1f}s): {e.stderr.decode(errors='replace')[-300:]}")
-            if done % 25 == 0:
-                db.commit()
-                rate = done / max(time.time() - start, 1)
-                log(f"  {done}/{len(unbuilt)} cut, {(len(unbuilt) - done - failed) / max(rate, 1e-6) / 60:.0f} min left")
-    db.commit()
-
-    ids = {r[0] for r in db.execute("select id from clips")}
-    for f in CLIPS.iterdir():
-        if f.name.split(".")[0] not in ids:
-            f.unlink()
-    size = sum(f.stat().st_size for f in CLIPS.iterdir()) / 1e9
-    n = db.execute("select count(*), sum(built) from clips").fetchone()
-    log(f"done: {n[0]} clips, {n[1] or 0} cut ({size:.2f} GB), {failed} failed")
+    n = db.execute("select count(*) from clips").fetchone()[0]
+    log(f"done: {n} clips")
 
 
 # ---------------------------------------------------------------- scenes (kumapie-tv, plan: kumapie_tv_plan.md)
@@ -848,13 +751,13 @@ def cmd_show(args) -> None:
         for surface, at, infl, lemma in json.loads(toks):
             if infl:
                 print(f"      {surface:<14} {infl:<16} {glosses.get(infl, '')}")
-    print(f"  EN: {english}\n  {CLIPS / (cid + '.mp4')}")
+    print(f"  EN: {english}\n  {cfg.library(PERSON) / source}")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="feed", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("build", help="cut clips and index them")
+    p = sub.add_parser("build", help="find clips and index them")
     p.add_argument("--only", metavar="TEXT", help="only videos whose path contains TEXT (e.g. s1_01)")
     p.set_defaults(func=cmd_build)
     p = sub.add_parser("scenes", help="split whole episodes into scenes for the TV app (no cutting)")

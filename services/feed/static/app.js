@@ -9,8 +9,6 @@ const STATUS = { u: "new word", l: "learning", k: "known" };
 // Only the visible clip holds a video: Firefox on Android froze the picture (sound kept playing) with
 // five loaded at once, most likely out of video decoders. The next clips are fetched into the browser
 // cache instead, so they still start at once.
-const PREFETCH = 3;
-const prefetched = new Set();
 
 const seen = new Set();   // ids shown this session, sent as `exclude` so nothing repeats
 const slides = [];        // {el, video, clip}
@@ -47,9 +45,8 @@ function addSlide(clip) {
   seen.add(clip.id);
   const el = tpl.content.firstElementChild.cloneNode(true);
   const video = el.querySelector("video");
-  // ?v=: the encoding version - clip files are cached for good, so a re-encode needs new URLs
-  video.poster = `clips/${clip.id}.jpg?v=${clip.v}`;
-  video.dataset.src = `clips/${clip.id}.mp4?v=${clip.v}`;
+  // The episode itself: #t= starts it at the clip, tick() stops it at clip.end.
+  video.dataset.src = `clips/${clip.id}.mp4?ep=1#t=${clip.start}`;
   el.querySelector(".vtitle").textContent = clip.title;
   el.querySelector(".at").textContent = clip.at;
   const lv = el.querySelector(".level");
@@ -83,19 +80,26 @@ function addSlide(clip) {
   video.addEventListener("pause", () => el.classList.add("paused"));
   video.addEventListener("waiting", () => el.classList.add("loading"));
   video.addEventListener("playing", () => el.classList.remove("loading"));
-  el.querySelector(".replay").addEventListener("click", () => { slide.plays = 0; video.currentTime = 0; play(slide); });
+  el.querySelector(".replay").addEventListener("click", () => { slide.plays = 0; video.currentTime = clip.start; play(slide); });
   el.querySelector(".auto").addEventListener("click", () => {
     setAuto(AUTO_STEPS[(AUTO_STEPS.indexOf(autoPlays) + 1) % AUTO_STEPS.length]);
   });
   // No `loop` attribute: each end counts a play, then the clip restarts or the feed moves on.
-  video.addEventListener("ended", () => {
+  slide.onEnd = () => {
     slide.plays = (slide.plays || 0) + 1;
     if (autoPlays && slide.plays >= autoPlays && !slide.hold && slides[active] === slide && slides[active + 1]) {
+      slide.userPaused = true;  // stays put while the feed scrolls on
+      video.pause();
       feedEl.scrollTo({ top: (active + 1) * feedEl.clientHeight, behavior: "smooth" });
     } else {
-      video.currentTime = 0;
+      video.currentTime = clip.start;
       play(slide);
     }
+  };
+  video.addEventListener("ended", slide.onEnd);  // a clip that runs to the episode's end
+  // The clip's end (tick() is finer, but requestAnimationFrame can be throttled; this always fires).
+  video.addEventListener("timeupdate", () => {
+    if (!video.paused && video.currentTime >= clip.end && slides[active] === slide) slide.onEnd();
   });
   el.querySelector(".speed").addEventListener("click", () => setRate(rate === 1 ? 0.75 : 1));
   const en = el.querySelector(".en");
@@ -185,16 +189,9 @@ function activate(i) {
   closePopup(false);
   active = i;
   slides.forEach((s, j) => { if (j !== i) unload(s); });
-  for (const s of slides.slice(i + 1, i + 1 + PREFETCH)) {
-    const url = s.video.dataset.src;
-    if (!prefetched.has(url)) {
-      prefetched.add(url);
-      fetch(url, { priority: "low" }).then((r) => r.blob()).catch(() => prefetched.delete(url));
-    }
-  }
   const s = slides[i];
   if (started) {
-    s.video.currentTime = 0;
+    s.video.currentTime = s.clip.start;
     play(s);
   }
   if (slides.length - i <= 4) fetchMore();
@@ -224,11 +221,12 @@ setInterval(() => {
   if (started && s && s.video.paused && !s.video.ended && !s.userPaused && !popupFor && !document.hidden) play(s);
 }, 1000);
 
-// The line being spoken, from the cue times (relative to the clip).
+// The line being spoken, from the cue times (relative to the clip), and the clip's end.
 function tick() {
   const s = slides[active];
   if (s && !s.video.paused) {
-    const t = s.video.currentTime;
+    if (s.video.currentTime >= s.clip.end) s.onEnd();
+    const t = s.video.currentTime - s.clip.start;
     s.clip.cues.forEach((c, i) => s.cueEls[i].classList.toggle("now", t >= c.start && t < c.end + 0.15));
   }
   requestAnimationFrame(tick);
@@ -351,7 +349,7 @@ async function init() {
     started = true;
     document.getElementById("start").classList.add("gone");
     const s = slides[Math.max(active, 0)];
-    if (s) { s.video.currentTime = 0; play(s); }
+    if (s) { s.video.currentTime = s.clip.start; play(s); }
   });
 }
 

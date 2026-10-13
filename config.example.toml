@@ -49,13 +49,9 @@ max_gap = 1.5          # seconds of silence between cues that end a clip
 max_secs = 15          # longer runs are split at their biggest pause
 min_words = 4          # clips with fewer words in total are dropped
 pad = 0.3              # seconds added before/after a clip, never into a neighbouring cue
-height = 480           # clip video height (px), libx264 at this crf
-crf = 26
-jobs = 3               # ffmpeg cuts in parallel
 i1_share = 0.5         # share of i+1 clips in the feed; the rest are i+0
 gloss_model = "claude-haiku-4-5"   # through tools\feed\llm.py (OpenRouter or Anthropic key in .env)
 tts_voice = "de-DE-KatjaNeural"    # edge-tts: the word audio in the popup
-loudness = -22                     # LUFS every clip is normalized to: the level of that word audio
 
 [feed.titles]          # show folder -> title above the clip (default: the folder name, humanized)
 you_and_i_are_polar_opposites = "You and I Are Polar Opposites"
