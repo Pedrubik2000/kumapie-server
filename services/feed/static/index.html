@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0f12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Feed</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="feed"></main>
+
+<div id="start" class="overlay">
+  <div class="start-box">
+    <div class="logo">Feed</div>
+    <p id="start-info">Loading…</p>
+    <button id="start-btn" disabled>Tap to start</button>
+  </div>
+</div>
+
+<div id="popup" class="popup hidden" role="dialog">
+  <div class="popup-head">
+    <div><span id="pop-word"></span> <span id="pop-sub"></span></div>
+    <div class="pop-btns">
+      <button id="pop-say-def" class="hidden" aria-label="Read the German definition">🔊 Definition</button>
+      <button id="pop-say" aria-label="Say the word">🔊</button>
+    </div>
+  </div>
+  <div id="pop-head"></div>
+  <div id="pop-gloss"></div>
+  <div id="pop-def" class="hidden">
+    <div id="pop-en"></div>
+    <div id="pop-de"></div>
+    <div id="pop-gr"></div>
+  </div>
+  <div id="pop-status"></div>
+  <div id="pop-inner" class="hidden"></div>
+</div>
+<div id="shade" class="hidden"></div>
+
+<template id="slide">
+  <section class="slide">
+    <div class="video-wrap">
+      <video playsinline preload="none"></video>
+      <div class="vtitle"></div>
+      <div class="paused-icon">▶</div>
+    </div>
+    <div class="meta">
+      <span class="at"></span>
+      <span class="level"></span>
+      <span class="spacer"></span>
+      <button class="ctl replay" aria-label="Replay">↺</button>
+      <button class="ctl speed" aria-label="Speed">1×</button>
+      <button class="ctl auto" aria-label="Auto-scroll">⏭ off</button>
+      <button class="ctl en-btn" aria-label="English">EN</button>
+    </div>
+    <div class="lines"></div>
+    <div class="en hidden-en"><span class="en-hint">Tap for English</span><span class="en-text"></span></div>
+  </section>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+[project]
+name = "kumapie-server"
+version = "0.1.0"
+description = "kumapie's PC side: dojo-feed (episodes, sync, word data, German feed, AniWorld jobs) and its tools"
+requires-python = "==3.13.*"
+dependencies = [
+    "anthropic",          # tools/feed/llm.py: feed.py gloss
+    "edge-tts",           # services/feed: word audio
+    "spacy>=3.8,<3.9",    # tools/feed (German clips), pc_episodes (kumapie's newepisode)
+    "de_core_news_lg @ https://github.com/explosion/spacy-models/releases/download/de_core_news_lg-3.8.0/de_core_news_lg-3.8.0-py3-none-any.whl",
+    "en_core_web_md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl",
+    "sudachipy",
+    "sudachidict_core==20260723.1",  # tools/kumapie/jiten_split.ps1: the dictionary version kumapie downloads
+    "requests",           # kumapie's meta.py (show metadata)
+]
+
+[tool.uv]
+package = false
+
+[tool.hatch.metadata]
+allow-direct-references = true

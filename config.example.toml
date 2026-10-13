@@ -1,0 +1,95 @@
+# kumapie server configuration. Every path is relative to the dojo root: the folder that contains this repo
+# (C:\dojo on Windows). Set DOJO_ROOT to point somewhere else. Secrets go in .env, not here.
+
+[paths]
+library = "library"   # source media, one folder per person (library/<person>/{anime,shows,movies,youtube,novels}/)
+state   = "state"     # service data: state/feed, state/dicts, state/morphs
+work    = "work"      # scratch and logs (work/logs/dojo-feed.log)
+archive = "archive"   # episodes removed from a device (sync.py moves them here)
+
+[kumapie]
+app = "code/apps/kumapie-tv"   # the kumapie app's checkout: tv.py and pc_episodes.py use its Python modules
+
+[morphs]
+# German words: spaCy with the options AnkiMorphs used (tools\feed\morphemizer.py).
+person = "pedro-de"
+spacy_model = "de_core_news_lg"
+ignore_names = true            # spaCy PROPN
+ignore_numbers = true
+ignore_bracket_contents = true # [..], (..) and （..）
+join_separable_verbs = true    # "Ich rufe dich an" -> lemma anrufen, inflection "rufe an"
+parse_lowercase = true         # lowercase before spaCy, like AnkiMorphs (matched the old tags best)
+
+[services]
+feed_port = 8769   # dojo-feed: 127.0.0.1 only, Tailscale Serve HTTPS 8445 in front
+
+# People. The key is used everywhere: library/<key>/, `--for <key>`.
+#   transcript  = language of <stem>.srt (what is spoken)
+#   translation = language of <stem>.<translation>.srt
+[people.pedro-de]
+name = "Pedro (German)"
+transcript = "de"
+translation = "en"
+
+[people.alice]
+name = "Alice"
+transcript = "en"
+translation = "es"
+
+[people.bob]
+name = "Bob"
+transcript = "en"
+translation = "es"
+
+[feed]
+# German feed: short clips from Pedro's library in a vertical swipe page (tools\feed, services\feed).
+# Clips, index and known words live in state\feed\.
+person = "pedro-de"
+max_gap = 1.5          # seconds of silence between cues that end a clip
+max_secs = 15          # longer runs are split at their biggest pause
+min_words = 4          # clips with fewer words in total are dropped
+pad = 0.3              # seconds added before/after a clip, never into a neighbouring cue
+height = 480           # clip video height (px), libx264 at this crf
+crf = 26
+jobs = 3               # ffmpeg cuts in parallel
+i1_share = 0.5         # share of i+1 clips in the feed; the rest are i+0
+gloss_model = "claude-haiku-4-5"   # through tools\feed\llm.py (OpenRouter or Anthropic key in .env)
+tts_voice = "de-DE-KatjaNeural"    # edge-tts: the word audio in the popup
+loudness = -22                     # LUFS every clip is normalized to: the level of that word audio
+
+[feed.titles]          # show folder -> title above the clip (default: the folder name, humanized)
+you_and_i_are_polar_opposites = "You and I Are Polar Opposites"
+mortal_kombat_ii_2026 = "Mortal Kombat II"
+ein_video_ueber_deutschland = "Ein Video über Deutschland"
+
+[sync]
+# kumapie episodes made on a phone/tablet, uploaded to the PC (services\feed\sync.py). A device says whose it is;
+# its episodes go to library\<key>\ by the episode's language.
+[sync.people]
+pedro = { de = "pedro-de", en = "pedro-en", ja = "pedro-ja" }
+alice = { en = "alice" }
+bob = { en = "bob" }
+
+[aniworld]
+# AniWorld / s.to links sent from kumapie (POST /api/aniworld, services\feed\aniworld.py): the PC downloads the dub in
+# the episode's language, transcribes it with Parakeet (CPU) and adds it to library\<key>\anime\. Own venv
+# (aniworld + onnx-asr), Parakeet's model in hf_home: the service runs as LocalSystem, not as the user.
+venv = "apps/aniworld"
+hf_home = "state/hf"
+dub = { de = "German Dub", en = "English Dub" }
+
+[kumapie.splitter]
+# Japanese words on the PC with the phones' own splitter (Jiten's, ported to Kotlin), run by
+# tools\kumapie\jiten_split.ps1 (and ja_words.py) with this JDK. Jiten's files are the ones dojo-feed serves the phones
+# (GET /api/models/<file>); Sudachi's core dictionary comes from the venv's sudachidict_core, as on the phones.
+jdk = "apps/jdk17"
+lexicon = "state/dicts/jiten-lexicon.tsv.gz"
+user_dic = "state/dicts/jiten_user_core.dic"
+
+[kumapie.dicts]
+# Yomitan dictionaries the PC looks words up in for the TV ("<spoken>-<meanings>" -> zip), the same ones the phones
+# use. services\feed\dicts.py builds state\feed\dicts.db from them (`dicts.py build`, again after changing a zip).
+de-en = "state/dicts/wty-de-en.zip"
+en-en = "state/dicts/wty-en-en.zip"
+en-es = "state/dicts/wty-en-es.zip"
+ja-en = "state/dicts/jitendex-yomitan.zip"
