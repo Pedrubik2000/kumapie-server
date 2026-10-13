@@ -105,14 +105,19 @@ def delete(person: str, eid: str) -> dict:
             if src.is_dir() and not any(src.iterdir()):
                 src.rmdir()
             _save(index)
-        try:
-            gone = json.loads(DELETED.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            gone = {}
-        if eid not in gone.setdefault(person, []):
-            gone[person].append(eid)
-            DELETED.write_text(json.dumps(gone, indent=1), encoding="utf-8")
+        remember_deleted(person, eid)
     return {"id": eid, "deleted": bool(e), "show": (e or {}).get("show", ""), "title": (e or {}).get("title", "")}
+
+
+def remember_deleted(person: str, eid: str) -> None:
+    """[eid] in /api/sync/<person>/deleted: the person's other devices drop it (an episode, or a book: book_sync.py)."""
+    try:
+        gone = json.loads(DELETED.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        gone = {}
+    if eid not in gone.setdefault(person, []):
+        gone[person].append(eid)
+        DELETED.write_text(json.dumps(gone, indent=1), encoding="utf-8")
 
 
 def status(person: str, eid: str) -> dict:
