@@ -8,7 +8,7 @@ work    = "work"      # scratch and logs (work/logs/dojo-feed.log)
 archive = "archive"   # episodes removed from a device (sync.py moves them here)
 
 [kumapie]
-app = "code/apps/kumapie-tv"   # the kumapie app's checkout: tv.py and pc_episodes.py use its Python modules
+app = "kumapie-tv"   # the kumapie app's checkout: tv.py and pc_episodes.py use its Python modules
 
 [morphs]
 # German words: spaCy with the options AnkiMorphs used (tools\feed\morphemizer.py).
