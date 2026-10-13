@@ -159,6 +159,10 @@ def status_of(key):
 def background():
     while True:
         reload()
+        try:
+            tv.synced(force=True)  # new or changed .kumapie.json files, here so no request waits on the scan
+        except Exception as e:
+            log(f"library scan failed: {e}")
         time.sleep(60)
 
 

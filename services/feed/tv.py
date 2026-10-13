@@ -74,7 +74,6 @@ META = STATE / "meta"
 META_KINDS = {"anime": "anime", "shows": "shows", "movies": "movies", "visual_novels": "visual_novels", "youtube": "youtube", "reels": "youtube"}
 ID = r"((?:local-)?[0-9a-f]{12})"
 LANG = {key: lang for libs in sync.PEOPLE.values() for lang, key in libs.items()}  # library -> its language
-RESCAN = 60  # seconds between looks for new .kumapie.json files
 ROUTES = {
     "episode": re.compile(rf"^/api/tv/episode/{ID}$"),
     "video": re.compile(rf"^/api/tv/video/{ID}$"),
@@ -121,6 +120,7 @@ class TV:
         self.thumb_lock = threading.Lock()
         self.synced_lock = threading.Lock()
         self.scanned = None  # (sync.json's mtime, time) of the last look at the libraries
+        self.parsed: dict[Path, tuple] = {}  # .kumapie.json -> ((mtime, size), its JSON): unchanged files aren't read again
         STATE.mkdir(parents=True, exist_ok=True)
         with self.tv_db() as db:
             db.executescript(TV_SCHEMA)
@@ -217,17 +217,22 @@ class TV:
         self.episodes, self.words, self.lemmas = episodes, words, lemmas
         self.word_gloss = word_gloss
         self.defs, self.def_texts = defs, def_texts
-        self.scanned = None  # the libraries' episodes join again on the next request
+        with self.synced_lock:
+            self.scanned = None  # the libraries' episodes join again on the next request
 
-    def synced(self) -> None:
-        """Adds the libraries' episodes with a .kumapie.json; looks again after RESCAN s or a sync upload."""
+    def synced(self, force: bool = False) -> None:
+        """Adds the libraries' episodes with a .kumapie.json. A request looks again only after a sync upload or a
+        feed.db reload; server.background() looks every minute (force), so opening kumapie never waits on that."""
         try:
             mtime = sync.INDEX.stat().st_mtime
         except OSError:
             mtime = None
+        if not force and self.scanned and self.scanned[0] == mtime:
+            return
         with self.synced_lock:
-            if self.scanned and self.scanned[0] == mtime and time.time() - self.scanned[1] < RESCAN:
-                return
+            if not force and self.scanned and self.scanned[0] == mtime:
+                return  # another thread just looked
+            parsed = {}
             listed = {e["id"]: e for person in sync._index().values() for e in person.values()}
             episodes = {k: v for k, v in self.episodes.items() if "path" not in v}  # feed.db's
             words, lemmas = set(self.words), dict(self.lemmas)
@@ -235,9 +240,13 @@ class TV:
                 root = cfg.library(key)
                 for f in sorted(root.rglob("*.kumapie.json")) if root.is_dir() else []:
                     try:
-                        data = json.loads(f.read_text(encoding="utf-8"))
+                        st = f.stat()
+                        stamp = (st.st_mtime_ns, st.st_size)
+                        old = self.parsed.get(f)
+                        data = old[1] if old and old[0] == stamp else json.loads(f.read_text(encoding="utf-8"))
                     except (OSError, ValueError):
                         continue
+                    parsed[f] = (stamp, data)
                     video = f.with_name(f.name.removesuffix(".kumapie.json") + ".mp4")
                     if not video.is_file() or "id" not in data:
                         continue
@@ -269,6 +278,7 @@ class TV:
                             lemmas.setdefault(i, known[i]["lemma"])
                     episodes[ep["id"]] = ep
             self.episodes, self.words, self.lemmas = episodes, words, lemmas
+            self.parsed = parsed
             self.scanned = (mtime, time.time())
 
     @staticmethod
