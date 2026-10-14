@@ -15,7 +15,6 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   POST /api/tv/meta         {"show", "kind", "source", "id"}: "Fix match" for a PC show (tv.py, meta.py)
   /api/tv/...             the kumapie-tv app's API (Android TV, whole episodes scene by scene): see tv.py
   /api/sync/...           episodes made on phones/tablets, kept here for the person's other devices: see sync.py
-  /api/sync/<p>/books/... books and manga added on them, the same way: see book_sync.py
 
 Binds 127.0.0.1: Tailscale Serve publishes it on HTTPS 8445 (tailnet only, never Funnel).
 """
@@ -40,7 +39,6 @@ from dojo import cfg  # noqa: E402
 from dojo.selfrestart import restart_on_change  # noqa: E402
 from tv import TV  # noqa: E402
 import sync  # noqa: E402
-import book_sync  # noqa: E402
 import known  # noqa: E402
 import aniworld  # noqa: E402
 
@@ -322,8 +320,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def sync_get(self, parts):
-        if len(parts) >= 2 and parts[1] == "books":
-            return self.books_get(parts[0], parts[2:])
         if len(parts) == 1 and parts[0] in sync.PEOPLE:
             return self.send_json(sync.listing(parts[0]))
         if len(parts) == 2 and parts[1] == "deleted" and parts[0] in sync.PEOPLE:
@@ -336,30 +332,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_file(f, ctype, cache=False) if f else self.send_error(404)
         self.send_error(404)
 
-    def books_get(self, person, parts):
-        if not parts and person in sync.PEOPLE:
-            return self.send_json(book_sync.listing(person))
-        if len(parts) == 2 and parts[1] == "status" and book_sync.valid(person, parts[0]):
-            return self.send_json(book_sync.status(person, parts[0]))
-        name = "/".join(parts[1:])
-        if parts and book_sync.valid(person, parts[0], name):
-            f = book_sync.stored(person, parts[0], name)
-            ctype = "application/json; charset=utf-8" if name == "book.json" else mimetypes.guess_type(name)[0] or "image/jpeg"
-            return self.send_file(f, ctype, cache=True) if f else self.send_error(404)
-        self.send_error(404)
-
     def do_PUT(self):
         url = urllib.parse.urlsplit(self.path)
         parts = url.path.split("/")[3:] if url.path.startswith("/api/sync/") else []
-        # A book's file: <person>/books/<id>/book.json or .../pages/0001.jpg
-        book = len(parts) >= 4 and parts[1] == "books" and book_sync.valid(parts[0], parts[2], "/".join(parts[3:]))
-        if not book and (len(parts) != 3 or not sync.valid(*parts)):
+        if len(parts) != 3 or not sync.valid(*parts):
             return self.send_error(404)
         try:
             offset = int(urllib.parse.parse_qs(url.query).get("offset", ["0"])[0])
-            length = int(self.headers.get("Content-Length") or 0)
-            size = (book_sync.receive(parts[0], parts[2], "/".join(parts[3:]), offset, self.rfile.read, length) if book
-                    else sync.receive(*parts, offset, self.rfile.read, length))
+            size = sync.receive(*parts, offset, self.rfile.read, int(self.headers.get("Content-Length") or 0))
         except ValueError as e:  # not where the PC is: the device starts again from the size it has
             data = json.dumps({"size": e.args[0] if e.args and isinstance(e.args[0], int) else 0}).encode()
             self.send_response(409)
@@ -372,15 +352,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         parts = path.split("/")[3:] if path.startswith("/api/sync/") else []
-        if len(parts) == 4 and parts[1] == "books" and book_sync.valid(parts[0], parts[2]) and parts[3] in ("done", "delete"):
-            try:
-                meta = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-                done = (book_sync.finish(parts[0], parts[2], meta) if parts[3] == "done"
-                        else book_sync.delete(parts[0], parts[2]))
-            except ValueError as e:
-                return self.send_error(400, str(e))
-            log(f"sync: {parts[0]} {'uploaded' if parts[3] == 'done' else 'deleted everywhere'} book {done['title']} ({parts[2]})")
-            return self.send_json(done)
         if len(parts) == 3 and parts[2] == "done" and sync.valid(parts[0], parts[1]):
             try:
                 meta = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
