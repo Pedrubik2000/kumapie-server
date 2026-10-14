@@ -72,6 +72,7 @@ bob = { en = "bob" }
 # (aniworld + onnx-asr), Parakeet's model in hf_home: the service runs as LocalSystem, not as the user.
 venv = "apps/aniworld"
 hf_home = "state/hf"
+parakeet_ja = "state/hf/parakeet-ja"   # Japanese YouTube: Parakeet ja (sherpa-onnx: model.int8.onnx, tokens.txt, silero_vad.onnx)
 dub = { de = "German Dub", en = "English Dub" }
 
 [kumapie.splitter]
