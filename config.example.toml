@@ -67,12 +67,14 @@ alice = { en = "alice" }
 bob = { en = "bob" }
 
 [aniworld]
-# AniWorld / s.to links sent from kumapie (POST /api/aniworld, services\feed\aniworld.py): the PC downloads the dub in
-# the episode's language, transcribes it with Parakeet (CPU) and adds it to library\<key>\anime\. Own venv
-# (aniworld + onnx-asr), Parakeet's model in hf_home: the service runs as LocalSystem, not as the user.
+# Episodes made on the PC for kumapie (POST /api/aniworld, services\feed\jobs.py): AniWorld / s.to dubs, and YouTube,
+# TikTok, Real-Debrid links and video files when the phone says "Make it on: the PC". Downloads, subtitles or Parakeet
+# (CPU), into library\<key>\. Own venv (aniworld, onnx-asr, sherpa-onnx, yt-dlp), Parakeet's model in hf_home: the
+# service runs as LocalSystem, not as the user.
 venv = "apps/aniworld"
 hf_home = "state/hf"
-parakeet_ja = "state/hf/parakeet-ja"   # Japanese YouTube: Parakeet ja (sherpa-onnx: model.int8.onnx, tokens.txt, silero_vad.onnx)
+alass = "apps/alass/alass-cli.exe"     # fits Jimaku's Japanese subtitles to the video (kaegi/alass 2.0.0, Windows build)
+parakeet_ja = "state/hf/parakeet-ja"   # Japanese: Parakeet ja (sherpa-onnx: model.int8.onnx, tokens.txt, silero_vad.onnx)
 dub = { de = "German Dub", en = "English Dub" }
 
 [kumapie.splitter]

@@ -41,18 +41,18 @@ def to_words(segments):
 
 def split_lines(tokens, times, end):
     """One stretch of speech -> subtitle lines (start, end, text): a line ends at a sentence mark or a pause once it
-    is long enough; past 7.5 s at its longest pause (Silero doesn't cut long speech by itself). Same rule as
-    kumapie's Parakeet.kt."""
+    is long enough, always at 2 s of silence (a song between words); past 7.5 s at its best place (Silero doesn't cut
+    long speech by itself). A line lasts until 1 s after its last token at most. Same rule as kumapie's Parakeet.kt."""
     n = len(tokens)
-    after = lambda i: times[i + 1] if i + 1 < n else end  # noqa: E731 - when the next token starts
-    gap = lambda i: after(i) - times[i]  # noqa: E731 - this token and the silence after it
+    after = lambda i: min(times[i + 1] if i + 1 < n else end, times[i] + 1.0)  # noqa: E731 - this token's end
+    gap = lambda i: (times[i + 1] if i + 1 < n else end) - times[i]  # noqa: E731 - this token and the silence after it
     # Never before hiragana (誤|った, 育|つ: the word's ending); best right after a particle.
     free = lambda i: i + 1 < n and not ("ぁ" <= tokens[i + 1].strip()[:1] <= "ゖ" or tokens[i + 1].strip()[:1] in "ーっ")  # noqa: E731
     score = lambda i: gap(i) + (1 if tokens[i].strip()[-1:] in "はがをにでともへや" else 0)  # noqa: E731
     out, first, i = [], 0, 0
     while i < n:
         dur, tok = after(i) - times[first], tokens[i].strip()
-        cut = i + 1 == n or (dur >= 2.5 and tok in ("。", "？", "！", "?", "!")) \
+        cut = i + 1 == n or gap(i) >= 2 or (dur >= 2.5 and tok in ("。", "？", "！", "?", "!")) \
             or (dur >= 3.5 and (tok == "、" or (free(i) and gap(i) >= 0.75)))
         if not cut and dur >= 7.5:  # no good place yet: the best one after the first 2 s
             ok = [j for j in range(first, i + 1) if times[j] - times[first] >= 2 and (free(j) or tokens[j].strip() == "、")]
@@ -86,12 +86,11 @@ def japanese(wav, model_dir, out):
     def drain():
         while not vad.empty():
             seg = vad.front
+            start, end = seg.start / 16000, (seg.start + len(seg.samples)) / 16000
             s = rec.create_stream()
             s.accept_waveform(16000, seg.samples)
             rec.decode_stream(s)
-            start = seg.start / 16000
-            lines.extend(split_lines(s.result.tokens, [start + t for t in s.result.timestamps],
-                                     start + len(seg.samples) / 16000))
+            lines.extend(split_lines(s.result.tokens, [start + t for t in s.result.timestamps], end))
             vad.pop()
 
     for i in range(0, len(audio), 512):
@@ -132,5 +131,6 @@ if __name__ == "__main__":
         lines = split_lines(toks, [i * 0.5 for i in range(len(toks))], len(toks) * 0.5)
         assert [t for _, _, t in lines] == ["今日は晴れ。", "明日は雨です、", "でも大丈夫"], lines
         assert all(b - a <= 8 for a, b, _ in split_lines(list("あ" * 40), [i * 0.3 for i in range(40)], 12))
+        assert split_lines(["さ", "せ", "そ"], [0.0, 0.3, 15.0], 15.5) == [(0.0, 1.3, "させ"), (15.0, 15.5, "そ")]
         sys.exit(print("ok"))
     main()

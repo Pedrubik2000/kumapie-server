@@ -11,7 +11,7 @@ tools that fill it. Runs on the Windows PC in `C:\dojo\kumapie-server`; media in
 | `services\feed\sync.py` | episodes made on a device, uploaded to `library\<key>\` |
 | `services\feed\known.py` | the words each person's kumapie shows as known |
 | `services\feed\dicts.py` | Yomitan dictionaries for the TV's lookups |
-| `services\feed\aniworld.py` | AniWorld / s.to links from kumapie: download, Parakeet, subtitles, episodes |
+| `services\feed\jobs.py` | episodes made on the PC for kumapie: AniWorld, YouTube, TikTok, Real-Debrid, uploaded files |
 | `tools\feed\feed.py` | German feed clips, scenes and glosses (`tools\feed\README.md`) |
 | `tools\kumapie\pc_episodes.py` | library videos -> kumapie episodes |
 | `tools\kumapie\ja_words.py`, `jiten_split.ps1`, `jiten_lexicon.py` | Japanese words with the phones' own splitter |

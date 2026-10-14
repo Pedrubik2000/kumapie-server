@@ -40,7 +40,7 @@ from dojo.selfrestart import restart_on_change  # noqa: E402
 from tv import TV  # noqa: E402
 import sync  # noqa: E402
 import known  # noqa: E402
-import aniworld  # noqa: E402
+import jobs  # noqa: E402
 
 F = cfg.raw["feed"]
 PORT = cfg.services["feed_port"]
@@ -255,7 +255,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/sync/"):
             return self.sync_get(path.split("/")[3:])
         if path == "/api/aniworld":
-            return self.send_json(aniworld.listing())
+            return self.send_json(jobs.listing())
         if path.startswith("/api/models/"):  # files the phones' Japanese splitter needs (item 26b), from state\dicts
             name = path.rsplit("/", 1)[-1]
             f = cfg.state / "dicts" / name
@@ -334,6 +334,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         url = urllib.parse.urlsplit(self.path)
+        if url.path.startswith("/api/aniworld/upload/"):  # a video for a job on the PC (services\feed\jobs.py)
+            parts = [urllib.parse.unquote(p) for p in url.path.split("/")[4:]]
+            q = urllib.parse.parse_qs(url.query)
+            try:
+                if len(parts) != 2:
+                    raise ValueError(0)
+                size = jobs.receive(parts[0], parts[1], int(q.get("offset", ["0"])[0]), int(q.get("total", ["0"])[0]),
+                                    self.rfile.read, int(self.headers.get("Content-Length") or 0))
+            except ValueError as e:
+                data = json.dumps({"size": e.args[0] if e.args and isinstance(e.args[0], int) else 0}).encode()
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                return self.wfile.write(data)
+            return self.send_json({"size": size})
         parts = url.path.split("/")[3:] if url.path.startswith("/api/sync/") else []
         if len(parts) != 3 or not sync.valid(*parts):
             return self.send_error(404)
@@ -374,10 +390,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(done)
         if path == "/api/aniworld":
             try:
-                job = aniworld.submit(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))
+                job = jobs.submit(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))
             except ValueError as e:
                 return self.send_error(400, str(e))
-            log(f"aniworld: {job['person']} queued {job['url']} ({job['lang']})")
+            log(f"jobs: {job['person']} queued {job['source']} {job['url']} ({job['lang']})")
             return self.send_json(job)
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
                         "/api/tv/device_seen", "/api/tv/meta"):
