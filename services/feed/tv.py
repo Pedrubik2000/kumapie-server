@@ -271,6 +271,7 @@ class TV:
                     pc_gloss = self.word_gloss if key == F["person"] else {}  # feed.db's meanings are German words'
                     # Phone-made episodes carry no meanings: the PC's Yomitan dictionaries fill them (dicts.py).
                     pair = f"{LANG[key]}-{cfg.people[key].translation if key in cfg.people else 'en'}"
+                    ep["pair"] = pair  # episode(): each scene's sense and the readings
                     ep["gloss"] = {i: (known.get(i) or {}).get("g") or pc_gloss.get(i, "")
                                    or dicts.look(pair, (known.get(i) or {}).get("lemma", ""), i) for i in ep["infl"]}
                     for i in ep["infl"]:
@@ -479,6 +480,7 @@ class TV:
             seen = self.seen_scenes(db).get(eid, set())
             looked = dict(db.execute("select word, count(*) from lookups where person = ? group by word", (ep["person"],)))
         status = status_of(ep["person"])
+        fits = self.scene_senses(ep)
         marked = self.known_words() if ep["person"] == F["person"] else set()
         theirs = status is None  # their phone never sent its known words: plain on the TV
         if theirs:
@@ -491,7 +493,7 @@ class TV:
                         "german": sc["german"], "level": self.level(sc, status) if sc["german"] and not theirs else None,
                         "seen": sc["id"] in seen,
                         "cues": [{"start": c["start"], "end": c["end"], "seg": c["seg"]} for c in sc["cues"]],
-                        "english": sc["english"], "g": sc["g"], "defs": sc.get("defs") or self.defs.get(sc["id"], {}),
+                        "english": sc["english"], "g": {**fits.get(sc["id"], {}), **sc["g"]}, "defs": sc.get("defs") or self.defs.get(sc["id"], {}),
                         **({"bgm": f"/api/tv/file/{eid}/{sc['bgm']}"} if sc.get("bgm") else {}),
                         # A novel kumapie draws (item 46): the screen at the line's start, then [start, fade, picture, mask].
                         **({"base": f"/api/tv/file/{eid}/{sc['base']}",
@@ -500,9 +502,34 @@ class TV:
                        for sc in ep["scenes"]],
             # s: k/u, g: meaning, lemma: dictionary form, n: times looked up, m: marked known on the TV
             "words": {i: {"s": "k" if i in status else "u", "g": g, "lemma": self.lemmas.get(i, ""),
-                          "n": looked.get(i, 0), "m": i in marked}
+                          "n": looked.get(i, 0), "m": i in marked, **self.reading(ep, i)}
                       for i, g in ep["gloss"].items()},
         }
+
+    def scene_senses(self, ep: dict) -> dict[str, dict[str, str]]:
+        """{scene: {word: sense}}: for an episode whose meanings come from dicts.py, each word's sense that fits the
+        scene's English when it isn't the general gloss (the TV card shows a scene's own meaning first)."""
+        pair = ep.get("pair")
+        if not pair or not pair.endswith("-en"):
+            return {}
+        out: dict[str, dict[str, str]] = {}
+        for sc in ep["scenes"]:
+            english = " ".join(e[2] for e in sc["english"] if len(e) > 2)
+            for i in sc["infl"]:
+                _kana, ss = dicts.senses(pair, self.lemmas.get(i, ""), i)
+                pick = dicts.best(ss, english) if len(ss) > 1 else None
+                if pick and pick != ep["gloss"].get(i):
+                    out.setdefault(sc["id"], {})[i] = pick
+        return out
+
+    def reading(self, ep: dict, word: str) -> dict:
+        """{"r": kana} for a Japanese word written with kanji; {} otherwise."""
+        if not ep.get("pair", "").startswith("ja-"):
+            return {}
+        lemma = self.lemmas.get(word, "")
+        kana, _ = dicts.senses(ep["pair"], lemma, word)
+        written = lemma or word
+        return {"r": kana} if kana and kana != written and any("一" <= c <= "鿿" for c in written) else {}
 
     @staticmethod
     def level(sc: dict, status) -> int:
