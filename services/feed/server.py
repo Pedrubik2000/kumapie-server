@@ -11,6 +11,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   /api/tts?w=<word>       the word read by edge-tts (only words in the feed), cached in state\\feed\\tts\\
   POST /api/tv/known_words  {"person", "lang", "words"}: the words kumapie shows as known (known.py)
   POST /api/tv/device_seen  {"person", "seen", "unwatched"}: what the person's phones count as seen (tv.py)
+  POST /api/tv/device_watch {"person", "watch": {lang: {day: seconds}}}: the phones' own time per language (tv.py)
   GET  /api/models/<file>   the Japanese splitter's data files (MODEL_FILES, from state\\dicts)
   POST /api/tv/meta         {"show", "kind", "source", "id"}: "Fix match" for a PC show (tv.py, meta.py)
   /api/tv/...             the kumapie-tv app's API (Android TV, whole episodes scene by scene): see tv.py
@@ -396,7 +397,7 @@ class Handler(BaseHTTPRequestHandler):
             log(f"jobs: {job['person']} queued {job['source']} {job['url']} ({job['lang']})")
             return self.send_json(job)
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
-                        "/api/tv/device_seen", "/api/tv/meta"):
+                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta"):
             return self.send_error(404)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -406,6 +407,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(tv.lookup(body))
             if path == "/api/tv/device_seen":
                 return self.send_json(tv.device_seen(body))
+            if path == "/api/tv/device_watch":
+                return self.send_json(tv.device_watch(body))
             if path == "/api/tv/meta":
                 return self.send_json(tv.set_meta(body))
             if path == "/api/tv/known":

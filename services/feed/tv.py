@@ -33,7 +33,9 @@ state\\feed\\tv.db (resume point per episode, scenes seen, seconds watched per d
   GET  /api/tv/people                the TV's "Who's watching?": [{"id": sync person, "name", "menu": "en"/"es"}]
   GET  /api/tv/history               everything recorded, for kumapie's progress note in Anki: {"pos": {episode:
                                      [pos, epoch s]}, "seen": {scene: [episode, first, last, times]}, "watch": {day:
-                                     seconds}, "lookups": {word: times}, "marked": {word: [true, 0]}, "gloss": {word: meaning}}
+                                     seconds}, "lwatch": {lang: {day: seconds}}, "lookups": {word: times}, "marked":
+                                     {word: [true, 0]}, "gloss": {word: meaning}}
+  POST /api/tv/device_watch          {"person", "watch": {lang: {day: seconds}}}: the person's phones' own time
 """
 from __future__ import annotations
 
@@ -52,6 +54,7 @@ from pathlib import Path
 
 from dojo import cfg
 import dicts
+import known
 import sync
 import sys
 sys.path.insert(0, str(cfg.kumapie_app / "mobile" / "src" / "main" / "python"))
@@ -67,6 +70,8 @@ CACHE = STATE / "tv"
 # What each person's phones count as seen (all their devices merged, the TV's scenes included) and their "Mark as not
 # watched" times: POST /api/tv/device_seen after every progress sync on a phone (kumapie_plan.md item 14).
 DEVICE_SEEN = STATE / "device_seen.json"
+# Each person's phones' watch time per language: {person: {lang: {day: seconds}}}, without the TV's (POST /api/tv/device_watch).
+DEVICE_WATCH = STATE / "device_watch.json"
 # Show metadata (items 20-23): META/<show folder>.json (meta.py's details, or {"none": true} when nothing matched) and
 # .jpg (its poster). Looked up once per show in the background; "Fix match" on a phone replaces it (POST /api/tv/meta).
 META = STATE / "meta"
@@ -325,6 +330,23 @@ class TV:
         tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(DEVICE_SEEN)
         return {"ok": True, "seen": len(seen), "unwatched": len(unwatched)}
+
+    @staticmethod
+    def device_watch(body: dict) -> dict:
+        """A person's phones' own watch time per language (the TV's left out): the TV's Home card adds it to its own."""
+        person = str(body.get("person", ""))
+        if person not in sync.PEOPLE:
+            raise ValueError("unknown person")
+        watch = {str(l): {str(d): float(s) for d, s in days.items()} for l, days in (body.get("watch") or {}).items()}
+        try:
+            data = json.loads(DEVICE_WATCH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        data[person] = watch
+        tmp = DEVICE_WATCH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(DEVICE_WATCH)
+        return {"ok": True, "langs": len(watch)}
 
     @staticmethod
     def seen_scenes(db) -> dict[str, set[str]]:
@@ -654,11 +676,15 @@ class TV:
             q = ",".join("?" * len(people))
             watch = dict(db.execute(f"select day, sum(seconds) from watch_p where person in ({q}) group by day", tuple(people)))
             lookups = dict(db.execute(f"select word, count(*) from lookups where person in ({q}) group by word", tuple(people)))
+            lwatch: dict[str, dict[str, float]] = {}
+            for p, day, s in db.execute(f"select person, day, seconds from watch_p where person in ({q})", tuple(people)):
+                days = lwatch.setdefault(LANG.get(p, PERSON.transcript), {})
+                days[day] = days.get(day, 0) + s
         if F["person"] not in people:
             pos = {e: v for e, v in pos.items() if e in mine}
             seen = {s: v for s, v in seen.items() if v[0] in mine}
-            return {"pos": pos, "seen": seen, "watch": watch, "lookups": lookups, "marked": {}, "gloss": {}}
-        return {"pos": pos, "seen": seen, "watch": watch, "lookups": lookups,
+            return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "marked": {}, "gloss": {}}
+        return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups,
                 "marked": {w: [True, 0] for w in self.known_words()},
                 "gloss": {w: self.word_gloss.get(w, "") for w in lookups if self.word_gloss.get(w)}}
 
@@ -698,4 +724,27 @@ class TV:
             "top_lookups": [[w, n, gloss.get(w, "")] for w, n in top],
             "marked_known": len(self.known_words()) if F["person"] in people else 0,
             "shows": sorted(shows.values(), key=lambda x: -x["seen"]),
+            "langs": self.lang_totals(people, today),
         }
+
+    def lang_totals(self, people: set[str], today: datetime.date) -> dict:
+        """Per language: time on the TV plus the person's phones (today, 7 days, all) and the words their phone knows."""
+        try:
+            phones = json.loads(DEVICE_WATCH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            phones = {}
+        q = ",".join("?" * len(people))
+        with self.tv_db() as db:
+            rows = db.execute(f"select person, day, seconds from watch_p where person in ({q})", tuple(people)).fetchall()
+        out = {}
+        for key in people:
+            lang = LANG.get(key, PERSON.transcript)
+            owner = next((p for p, libs in sync.PEOPLE.items() if key in libs.values()), "")
+            days = dict(phones.get(owner, {}).get(lang, {}))
+            for p, day, s in rows:
+                if p == key:
+                    days[day] = days.get(day, 0) + s
+            out[lang] = {"today": days.get(today.isoformat(), 0),
+                         "week": sum(days.get((today - datetime.timedelta(days=i)).isoformat(), 0) for i in range(7)),
+                         "total": sum(days.values()), "known": len(known.words(key) or ())}
+        return out
