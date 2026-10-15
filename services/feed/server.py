@@ -5,8 +5,8 @@ Reads state\\feed\\feed.db (written by tools\\feed\\feed.py build/gloss) and the
 phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked known on the TV.
 
   /                       the page (static/), installable to the home screen
-  POST /api/feed          {"n": 10, "exclude": [ids shown]} -> random i+0 / i+1 clips with lines, glosses and
-                          per-line definitions ("defs", as the TV's scenes)
+  POST /api/feed          {"n": 10, "exclude": [ids shown]} -> random i+0 / i+1 clips with lines and
+                          dictionary meanings
   /clips/<id>.mp4         the clip's episode video, with HTTP Range (the page plays start..end of it)
   /api/tts?w=<word>       the word read by edge-tts (only words in the feed), cached in state\\feed\\tts\\
   POST /api/tv/known_words  {"person", "lang", "words"}: the words kumapie shows as known (known.py)
@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # code/
 from dojo import cfg  # noqa: E402
 from dojo.selfrestart import restart_on_change  # noqa: E402
 from tv import TV  # noqa: E402
+import dicts  # noqa: E402
 import sync  # noqa: E402
 import known  # noqa: E402
 import jobs  # noqa: E402
@@ -90,14 +91,11 @@ def mtime(path):
 def load_db():
     db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
     try:
-        glosses = {}
-        for cid, infl, gloss in db.execute("select clip_id, inflection, gloss from glosses"):
-            glosses.setdefault(cid, {})[infl] = gloss
         clips = {}
         for cid, title, source, start, end, english in db.execute(
                 "select id, title, source, start, end, english from clips where built = 1"):
             clips[cid] = {"id": cid, "title": title, "at": mmss(start), "source": source, "start": start, "end": end,
-                          "english": english, "cues": [], "infl": set(), "glosses": glosses.get(cid, {})}
+                          "english": english, "cues": [], "infl": set()}
         words = set()
         for cid, s, e, text, toks in db.execute(
                 "select clip_id, start, end, text, tokens from cues order by clip_id, idx"):
@@ -196,17 +194,11 @@ def pick(n, exclude):
         out = []
         for cid in chosen:
             c = feed["clips"][cid]
-            # A feed clip is a TV scene: its per-line definitions (definitions v2) come along, and the words
-            # inside them get a status and meaning too, so the page can colour them and open them.
-            defs = tv.defs.get(cid, {})
-            infl = set(c["infl"])
-            for d in defs.values():
-                infl.update(w for _, w in d["de"] if w)
-            words = {i: {"s": "k" if i in st else "u",
-                         "g": c["glosses"].get(i) or tv.word_gloss.get(i, "")}
-                     for i in infl}
+            # Meanings from the dictionary only (user, 2026-10-15), as on the TV.
+            words = {i: {"s": "k" if i in st else "u", "g": dicts.look("de-en", tv.lemmas.get(i, ""), i)}
+                     for i in c["infl"]}
             out.append({"id": cid, "start": c["start"], "end": c["end"], "title": c["title"], "at": c["at"], "english": c["english"],
-                        "level": levels[cid], "cues": c["cues"], "words": words, "defs": defs})
+                        "level": levels[cid], "cues": c["cues"], "words": words})
         return {"clips": out, "wrapped": wrapped,
                 "pool": {"i0": sum(1 for v in levels.values() if v == 0),
                          "i1": sum(1 for v in levels.values() if v == 1)}}
@@ -273,10 +265,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         if path == "/api/tts":
             query = urllib.parse.parse_qs(url.query)
-            if "d" in query:  # a per-line German definition, read aloud (the TV's "OK twice")
-                text = tv.def_texts.get(query["d"][0], "")
-                f = tts(text) if text else None
-                return self.send_file(f, "audio/mpeg", cache=True) if f else self.send_error(404)
             word = query.get("w", [""])[0].strip().lower()
             with lock:
                 ok = word in feed["words"] or word in tv.words

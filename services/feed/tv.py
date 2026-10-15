@@ -49,7 +49,6 @@ import subprocess
 import threading
 import time
 import urllib.request
-from collections import Counter
 from pathlib import Path
 
 from dojo import cfg
@@ -119,9 +118,6 @@ class TV:
         self.words: set[str] = set()  # surface forms, lower case (for /api/tts)
         self.write_lock = threading.Lock()
         self.lemmas: dict[str, str] = {}
-        self.word_gloss: dict[str, str] = {}  # a word's own meaning (the phone feed uses it too)
-        self.defs: dict[str, dict[str, dict]] = {}  # scene id -> "<line>|<word>" -> definition
-        self.def_texts: dict[str, str] = {}  # "<scene>|<line>|<word>" -> German definition (for audio)
         self.thumb_lock = threading.Lock()
         self.synced_lock = threading.Lock()
         self.scanned = None  # (sync.json's mtime, time) of the last look at the libraries
@@ -154,21 +150,13 @@ class TV:
         tables = {r[0] for r in db.execute("select name from sqlite_master where type = 'table'")}
         if "scenes" not in tables:
             return
-        scene_gloss: dict[str, dict[str, str]] = {}
-        by_word: dict[str, Counter] = {}
-        for sid, infl, gloss in db.execute("select clip_id, inflection, gloss from glosses"):
-            scene_gloss.setdefault(sid, {})[infl] = gloss
-            by_word.setdefault(infl, Counter())[gloss] += 1
-        # A word's own meaning (word_glosses, one per word), else its most used scene meaning.
-        word_gloss = {w: c.most_common(1)[0][0] for w, c in by_word.items()}
-        if "word_glosses" in tables:
-            word_gloss.update(dict(db.execute("select inflection, gloss from word_glosses")))
-
+        # Meanings come from the dictionaries only (user, 2026-10-15): feed.db's AI glosses and line definitions
+        # (feed.py gloss / defs) aren't served any more.
         episodes = {}
         for source, kind, show, show_title, title, season, number, duration in db.execute(
                 "select source, kind, show, show_title, title, season, episode, duration from episodes"):
             eid = episode_id(source)
-            episodes[eid] = {"id": eid, "person": F["person"], "source": source, "kind": kind, "show": show, "show_title": show_title,
+            episodes[eid] = {"id": eid, "person": F["person"], "pair": "de-en", "source": source, "kind": kind, "show": show, "show_title": show_title,
                              "title": title or show_title, "season": season, "episode": number,
                              "duration": duration, "scenes": [], "infl": set()}
         scenes = {}
@@ -196,32 +184,9 @@ class TV:
                     words.add(surface.lower())
                     if lemma:
                         lemmas.setdefault(infl, lemma)
-        defs: dict[str, dict[str, dict]] = {}
-        def_texts: dict[str, str] = {}
-        if "line_defs" in tables:
-            for sid, line, infl, lemma, en, de, gr, toks in db.execute(
-                    "select scene_id, cue_idx, inflection, lemma, english, german, grammar, german_tokens from line_defs"):
-                if sid not in scenes:
-                    continue
-                toks = json.loads(toks or "[]")
-                defs.setdefault(sid, {})[f"{line}|{infl}"] = {"lemma": lemma, "en": en, "de": self.segments(de, toks),
-                                                             "gr": gr}
-                def_texts[f"{sid}|{line}|{infl}"] = de
-                ep, _ = scenes[sid]
-                for surface, _, w, lem in toks:  # the definition's words: pickable, with a status and meaning
-                    if w:
-                        ep["infl"].add(w)
-                        words.add(surface.lower())
-                        if lem:
-                            lemmas.setdefault(w, lem)
-        for ep, sc in scenes.values():  # the scene's own meaning, only where it differs from the word's
-            own = scene_gloss.get(sc["id"], {})
-            sc["g"] = {i: g for i, g in own.items() if i in sc["infl"] and g != word_gloss.get(i)}
         for ep in episodes.values():
-            ep["gloss"] = {i: word_gloss.get(i, "") or dicts.look("de-en", lemmas.get(i, ""), i) for i in ep["infl"]}
+            ep["gloss"] = {i: dicts.look("de-en", lemmas.get(i, ""), i) for i in ep["infl"]}
         self.episodes, self.words, self.lemmas = episodes, words, lemmas
-        self.word_gloss = word_gloss
-        self.defs, self.def_texts = defs, def_texts
         with self.synced_lock:
             self.scanned = None  # the libraries' episodes join again on the next request
 
@@ -268,17 +233,14 @@ class TV:
                         words |= {t.lower() for t, _ in segs}
                         ep["scenes"].append({"id": sc["id"], "i": sc["i"], "start": sc["start"], "end": sc["end"],
                                              "german": sc.get("german", True), "english": sc.get("english", []),
-                                             "cues": sc.get("cues", []), "infl": infl, "g": sc.get("g", {}),
-                                             "defs": sc.get("defs", {}), "bgm": sc.get("bgm"),
+                                             "cues": sc.get("cues", []), "infl": infl, "bgm": sc.get("bgm"),
                                              "base": sc.get("base"), "pics": sc.get("pics")})
                         ep["infl"] |= infl
                     known = data.get("words", {})
-                    pc_gloss = self.word_gloss if key == F["person"] else {}  # feed.db's meanings are German words'
-                    # Phone-made episodes carry no meanings: the PC's Yomitan dictionaries fill them (dicts.py).
+                    # Meanings from the PC's Yomitan dictionaries only (dicts.py).
                     pair = f"{LANG[key]}-{cfg.people[key].translation if key in cfg.people else 'en'}"
                     ep["pair"] = pair  # episode(): each scene's sense and the readings
-                    ep["gloss"] = {i: (known.get(i) or {}).get("g") or pc_gloss.get(i, "")
-                                   or dicts.look(pair, (known.get(i) or {}).get("lemma", ""), i) for i in ep["infl"]}
+                    ep["gloss"] = {i: dicts.look(pair, (known.get(i) or {}).get("lemma", ""), i) for i in ep["infl"]}
                     for i in ep["infl"]:
                         if (known.get(i) or {}).get("lemma"):
                             lemmas.setdefault(i, known[i]["lemma"])
@@ -515,7 +477,7 @@ class TV:
                         "german": sc["german"], "level": self.level(sc, status) if sc["german"] and not theirs else None,
                         "seen": sc["id"] in seen,
                         "cues": [{"start": c["start"], "end": c["end"], "seg": c["seg"]} for c in sc["cues"]],
-                        "english": sc["english"], "g": {**fits.get(sc["id"], {}), **sc["g"]}, "defs": sc.get("defs") or self.defs.get(sc["id"], {}),
+                        "english": sc["english"], "g": fits.get(sc["id"], {}),
                         **({"bgm": f"/api/tv/file/{eid}/{sc['bgm']}"} if sc.get("bgm") else {}),
                         # A novel kumapie draws (item 46): the screen at the line's start, then [start, fade, picture, mask].
                         **({"base": f"/api/tv/file/{eid}/{sc['base']}",
@@ -686,7 +648,12 @@ class TV:
             return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "marked": {}, "gloss": {}}
         return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups,
                 "marked": {w: [True, 0] for w in self.known_words()},
-                "gloss": {w: self.word_gloss.get(w, "") for w in lookups if self.word_gloss.get(w)}}
+                "gloss": {w: g for w in lookups if (g := self.dict_gloss(w))}}
+
+    def dict_gloss(self, word: str) -> str:
+        """A looked-up word's dictionary meaning (kana or kanji: Japanese, else German)."""
+        pair = "ja-en" if any("぀" <= c <= "鿿" for c in word) else "de-en"
+        return dicts.look(pair, self.lemmas.get(word, ""), word)
 
     def stats(self, person: str | None = None) -> dict:
         """Watch time per day with today / 7 days / total and the streak, scenes seen, lookups, words marked."""
