@@ -132,6 +132,8 @@ def _link(type_: str, sid: str, token: str, q: str, torrent: str) -> tuple[str, 
             urllib.request.Request(best["url"], headers={"User-Agent": "kumapie"}), timeout=60)
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 307) and e.headers.get("Location"):
+            if "torrentio.strem.fun/videos/" in e.headers["Location"]:  # its "downloading" placeholder video
+                raise ValueError("Real-Debrid is still downloading this one: pick it again in a few minutes") from None
             return e.headers["Location"], m[1].lower() if m else ""
         raise
     raise ValueError("Real-Debrid gave no file")
