@@ -102,6 +102,8 @@ def submit(body: dict) -> dict:
            "count": max(1, min(int(body.get("count") or 10), 200)), "height": int(body.get("height") or 720),
            "show": str(body.get("show") or "").strip(), "type": str(body.get("type") or "") if body.get("type") in TYPES else "",
            "rd": str(body.get("rd") or ""), "jimaku": str(body.get("jimaku") or ""),
+           # A season pack (stremio.py): only this season's files, episode [first] before the others.
+           "season": int(body.get("season") or 0), "first": int(body.get("first") or 0),
            "state": "queued", "step": "", "error": "", "episodes": []}
     jobs.insert(0, job)
     _queue.put(job)
@@ -361,16 +363,20 @@ def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str
 def _rd(job: dict, tmp: Path) -> None:
     job["step"] = "asking Real-Debrid"
     files = json.loads(realdebrid.episodes(job["rd"], job["url"], _Log(job)))
-    made, failed = [], []
+    if job["season"]:  # ponytail: a file without a season number counts as this season's (one-season packs)
+        files = [f for f in files if realdebrid.numbers(f["name"])[0] in (None, job["season"])]
+    if job["first"]:
+        files.sort(key=lambda f: realdebrid.numbers(f["name"])[1] != job["first"])  # stable: the rest keep their order
+    failed = []
     for i, f in enumerate(files, 1):
         prefix = f"{i}/{len(files)} "
         try:
             path = Path(realdebrid.download(job["rd"], f["link"], str(tmp / "download"), _Log(job, prefix)))
-            made.append(_local(job, path, f["name"], f["single"], tmp, prefix))
+            # Each episode as soon as it's made: kumapie plays the first while the rest of a season downloads.
+            _episodes(job, [_local(job, path, f["name"], f["single"], tmp, prefix)])
             path.unlink()
         except Exception as e:  # noqa: BLE001 - one bad file doesn't stop a season's others
             failed.append(f"{f['name']}: {str(e)[:100]}")
-    _episodes(job, made)
     if failed:
         raise RuntimeError(f"{len(failed)} of {len(files)} failed: " + "; ".join(failed))
 
