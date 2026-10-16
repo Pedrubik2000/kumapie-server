@@ -484,7 +484,7 @@ class Handler(BaseHTTPRequestHandler):
             log(f"jobs: {job['person']} queued {job['source']} {job['url']} ({job['lang']})")
             return self.send_json(job)
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
-                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta"):
+                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream"):
             return self.send_error(404)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -496,6 +496,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(tv.device_seen(body))
             if path == "/api/tv/device_watch":
                 return self.send_json(tv.device_watch(body))
+            if path == "/api/tv/stream":
+                return self.send_json(tv.stream(body))
             if path == "/api/tv/meta":
                 return self.send_json(tv.set_meta(body))
             if path == "/api/tv/known":

@@ -15,6 +15,8 @@ state\\feed\\tv.db (resume point per episode, scenes seen, seconds watched per d
                                      A scene's "defs" {"<line>|<word>": {"lemma", "en", "de": segments, "gr"}}
                                      are its per-line definitions (definitions v2); words inside "de" are in
                                      "words" too, so they can be picked
+  POST /api/tv/stream                {"person", "lang", "title", "subs", "english"?}: a NuvioTV stream's subtitles
+                                     (SRT/VTT/ASS text) -> {"id"} of its episode; the TV plays the stream itself
   GET  /api/tv/video/<id>            the episode's .mp4 from library\\ (HTTP Range; the app seeks to scenes)
   GET  /api/tv/file/<id>/img/<name>.webp a novel's screens (and mask/<name>.png wipes): a scene's "base" and "pics"
   GET  /api/tv/file/<id>/bgm/<name>.ogg  a novel's music (tools\\vn\\higurashi.py): a scene's "bgm", played
@@ -76,7 +78,10 @@ DEVICE_WATCH = STATE / "device_watch.json"
 META = STATE / "meta"
 # Home category -> meta.py kind; YouTube channels and reels: the channel's picture (found from one of its video links)
 META_KINDS = {"anime": "anime", "shows": "shows", "movies": "movies", "visual_novels": "visual_novels", "youtube": "youtube", "reels": "youtube"}
-ID = r"((?:local-)?[0-9a-f]{12})"
+# Streams kumapie plays for NuvioTV (it's NuvioTV's external player): STREAM/<id>.kumapie.json, made from the stream's
+# subtitles by POST /api/tv/stream (id stream-<hex>); the TV plays the stream's own URL, the PC never has the video.
+STREAM = STATE / "stream"
+ID = r"((?:local-|stream-)?[0-9a-f]{12})"
 LANG = {key: lang for libs in sync.PEOPLE.values() for lang, key in libs.items()}  # library -> its language
 ROUTES = {
     "episode": re.compile(rf"^/api/tv/episode/{ID}$"),
@@ -94,6 +99,43 @@ create table if not exists watch (day text primary key, seconds real);
 create table if not exists lookups (word text, scene text, at text);
 create table if not exists watch_p (day text, person text, seconds real, primary key (day, person));
 """
+
+
+TIME = re.compile(r"(?:(\d+):)?(\d\d):(\d\d)[,.](\d{3})\s*-->\s*(?:(\d+):)?(\d\d):(\d\d)[,.](\d{3})")
+
+
+def subtitle_cues(text: str) -> list[list]:
+    """An SRT, WebVTT or ASS/SSA file -> [[start, end, text]] in seconds, tags stripped, sorted."""
+    text = text.lstrip("﻿").replace("\r\n", "\n")
+    cues = []
+    if "[Events]" in text:
+        fields = None
+        for line in text.split("\n"):
+            if line.startswith("Format:") and fields is None and "Text" in line:
+                fields = [f.strip() for f in line[7:].split(",")]
+            elif line.startswith("Dialogue:") and fields:
+                parts = line[9:].split(",", len(fields) - 1)
+                row = dict(zip(fields, parts))
+                if r"\p1" in row.get("Text", ""):
+                    continue  # a drawing, not words
+                h1, m1, s1 = row["Start"].strip().split(":")
+                h2, m2, s2 = row["End"].strip().split(":")
+                body = re.sub(r"\{[^}]*}", "", row["Text"]).replace(r"\N", " ").replace(r"\n", " ").replace(r"\h", " ").strip()
+                if body:
+                    cues.append([int(h1) * 3600 + int(m1) * 60 + float(s1), int(h2) * 3600 + int(m2) * 60 + float(s2), body])
+    else:
+        for block in re.split(r"\n\s*\n", text):
+            lines = block.strip().split("\n")
+            for i, line in enumerate(lines):
+                m = TIME.search(line)
+                if m:
+                    t = [int(x or 0) for x in m.groups()]
+                    body = re.sub(r"<[^>]+>|\{\\[^}]*}", "", " ".join(x.strip() for x in lines[i + 1:] if x.strip())).strip()
+                    if body:
+                        cues.append([t[0] * 3600 + t[1] * 60 + t[2] + t[3] / 1000, t[4] * 3600 + t[5] * 60 + t[6] + t[7] / 1000, body])
+                    break
+    # ASS often draws one line twice (outline layer + text): keep one
+    return sorted({(c[0], c[1], c[2]): c for c in cues}.values())
 
 
 def log(msg):
@@ -120,6 +162,7 @@ class TV:
         self.lemmas: dict[str, str] = {}
         self.thumb_lock = threading.Lock()
         self.synced_lock = threading.Lock()
+        self.stream_lock = threading.Lock()  # one stream's words at a time (Japanese: a Gradle run)
         self.scanned = None  # (sync.json's mtime, time) of the last look at the libraries
         self.parsed: dict[Path, tuple] = {}  # .kumapie.json -> ((mtime, size), its JSON): unchanged files aren't read again
         STATE.mkdir(parents=True, exist_ok=True)
@@ -206,8 +249,7 @@ class TV:
             listed = {e["id"]: e for person in sync._index().values() for e in person.values()}
             episodes = {k: v for k, v in self.episodes.items() if "path" not in v}  # feed.db's
             words, lemmas = set(self.words), dict(self.lemmas)
-            for key in LANG:
-                root = cfg.library(key)
+            for lib, root in [(key, cfg.library(key)) for key in LANG] + [(None, STREAM)]:  # None: streams, owner in the JSON
                 for f in sorted(root.rglob("*.kumapie.json")) if root.is_dir() else []:
                     try:
                         st = f.stat()
@@ -217,12 +259,13 @@ class TV:
                     except (OSError, ValueError):
                         continue
                     parsed[f] = (stamp, data)
-                    video = f.with_name(f.name.removesuffix(".kumapie.json") + ".mp4")
-                    if not video.is_file() or "id" not in data:
+                    key = lib or data.get("key")
+                    video = f.with_name(f.name.removesuffix(".kumapie.json") + ".mp4") if lib else None
+                    if "id" not in data or key not in LANG or (lib and not video.is_file()):
                         continue
                     e = listed.get(data["id"], data)  # a synced one's listing has its kind, season and number
                     ep = {"id": data["id"], "person": key, "source": e.get("source", ""), "path": video,
-                          "kind": "reels" if e.get("kind") == "reels" else sync.KIND_DIR.get(e.get("kind"), f.relative_to(root).parts[0]), "show": f.parent.name,
+                          "kind": "stream" if not lib else "reels" if e.get("kind") == "reels" else sync.KIND_DIR.get(e.get("kind"), f.relative_to(root).parts[0]), "show": f.parent.name,
                           "show_title": e.get("show") or data.get("show", ""), "title": e.get("title") or data.get("title", ""),
                           "season": e.get("season"), "episode": e.get("number"),
                           "duration": e.get("duration") or data.get("duration"), "scenes": [], "infl": set(),
@@ -342,7 +385,7 @@ class TV:
             seen = {e: len(s) for e, s in self.seen_scenes(db).items()}
         shows: dict[str, dict] = {}
         for ep in sorted(self.episodes.values(), key=lambda e: (e["season"] or 0, e["episode"] or 0, e["source"])):
-            if ep["person"] not in people:
+            if ep["person"] not in people or ep["kind"] == "stream":  # a stream's URL is NuvioTV's, gone after it
                 continue
             sh = shows.setdefault(ep["show"], {"id": ep["show"], "title": ep["show_title"], "kind": ep["kind"],
                                                "lang": LANG.get(ep["person"], PERSON.transcript),
@@ -491,6 +534,37 @@ class TV:
                           "n": looked.get(i, 0), "m": i in marked, **self.reading(ep, i)}
                       for i, g in ep["gloss"].items()},
         }
+
+    def stream(self, body: dict) -> dict:
+        """POST /api/tv/stream {"person": sync person, "lang", "title", "subs": subtitle file, "english"?: subtitle
+        file}: the stream's episode, made once per subtitle file (Japanese ~30 s: the phones' splitter) -> {"id"}."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "kumapie"))
+        import pc_episodes  # the library's episode maker (spaCy, ja_words); its imports set the rest of the paths
+        lang = str(body.get("lang") or "")
+        person = str(body.get("person") or next((p for p, libs in sync.PEOPLE.items() if F["person"] in libs.values()), ""))
+        key = sync.PEOPLE.get(person, {}).get(lang)
+        if not key:
+            raise ValueError(f"{person} has no {lang} library")
+        cues = subtitle_cues(str(body.get("subs") or ""))
+        if not cues:
+            raise ValueError("no subtitle lines")
+        english = subtitle_cues(str(body.get("english") or ""))
+        title = str(body.get("title") or "Stream")[:200]
+        eid = "stream-" + hashlib.sha1(json.dumps([key, cues, english]).encode()).hexdigest()[:12]
+        out = STREAM / f"{eid}.kumapie.json"
+        with self.stream_lock:
+            if not out.exists():
+                ja = lang == "ja"
+                episode = json.loads(pc_episodes.newepisode.build(
+                    "" if ja else pc_episodes.MODELS[lang], eid, str(body.get("show") or title)[:200], title, cues[-1][1], "",
+                    json.dumps(cues), json.dumps(english), lang, json.dumps(pc_episodes.ja_words.parsed([c[2] for c in cues])) if ja else ""))
+                episode.pop("video")
+                episode.update(key=key, kind="stream", source="")
+                STREAM.mkdir(parents=True, exist_ok=True)
+                out.write_text(json.dumps(episode, ensure_ascii=False), encoding="utf-8")
+                log(f"stream: {key} {title} ({len(cues)} lines) -> {eid}")
+        self.synced(force=True)
+        return {"id": eid}
 
     def scene_senses(self, ep: dict) -> dict[str, dict[str, str]]:
         """{scene: {word: sense}}: for an episode whose meanings come from dicts.py, each word's sense that fits the
