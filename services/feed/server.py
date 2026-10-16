@@ -45,6 +45,7 @@ import dicts  # noqa: E402
 import sync  # noqa: E402
 import known  # noqa: E402
 import jobs  # noqa: E402
+import stremio  # noqa: E402
 import anki  # noqa: E402
 
 F = cfg.raw["feed"]
@@ -59,6 +60,7 @@ lock = threading.Lock()
 feed = {"clips": {}, "words": set(), "status": frozenset(), "levels": {}, "db_mtime": None}
 tts_lock = threading.Lock()
 tv = None  # TV(...) once segments() is defined
+ADDON = re.compile(r"^/addon/(\w+)/(manifest\.json|stream/(movie|series)/((?:tt\d+|kitsu:\d+)(?::\d+)*)\.json)$")
 
 
 def log(msg):
@@ -292,6 +294,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.sync_get(path.split("/")[3:])
         if path == "/api/aniworld":
             return self.send_json(jobs.listing())
+        if m := ADDON.match(path):  # the Stremio add-on that hands NuvioTV's titles to kumapie (stremio.py)
+            if m[1] not in sync.PEOPLE:
+                return self.send_error(404)
+            return self.send_json(stremio.manifest(m[1]) if m[2] == "manifest.json" else stremio.streams(m[1], m[3], m[4]))
         if path == "/api/models/ja-dicts" or path.startswith("/api/models/ja-dicts/"):
             d = (cfg.state / "dicts" / JA_DICTS).resolve()
             if path == "/api/models/ja-dicts":
@@ -483,6 +489,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(400, str(e))
             log(f"jobs: {job['person']} queued {job['source']} {job['url']} ({job['lang']})")
             return self.send_json(job)
+        if path == "/api/tv/prepare":
+            try:
+                return self.send_json(stremio.prepare(tv, json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")))
+            except (ValueError, OSError) as e:  # OSError: Torrentio or Real-Debrid unreachable; the TV shows the reason
+                return self.send_json({"state": "failed", "step": "", "error": str(e)[:200]})
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
                         "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream"):
             return self.send_error(404)
