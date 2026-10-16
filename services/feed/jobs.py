@@ -102,10 +102,8 @@ def submit(body: dict) -> dict:
            "count": max(1, min(int(body.get("count") or 10), 200)), "height": int(body.get("height") or 720),
            "show": str(body.get("show") or "").strip(), "type": str(body.get("type") or "") if body.get("type") in TYPES else "",
            "rd": str(body.get("rd") or ""), "jimaku": str(body.get("jimaku") or ""),
-           # A season pack (stremio.py): only this season's files, episode [first] before the others.
-           "season": int(body.get("season") or 0), "first": int(body.get("first") or 0),
-           # The show's folder when it has episodes already (stremio.py knows it): those aren't downloaded again.
-           "folder": str(body.get("folder") or ""),
+           # Which episode one file is (stremio.py, from the Stremio id): names it instead of the file name's guess.
+           "season": int(body.get("season") or 0), "number": int(body.get("number") or 0),
            "state": "queued", "step": "", "error": "", "episodes": []}
     jobs.insert(0, job)
     _queue.put(job)
@@ -327,6 +325,8 @@ def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str
     lang, translation = job["lang"], _translation(job["key"])
     about = json.loads(realdebrid.describe(name, single))
     show, season, number = job["show"] or about["show"] or Path(name).stem, about["season"], about["number"]
+    if job["number"]:  # stremio.py knows which episode it is: not the file name's guess
+        season, number = job["season"] or None, job["number"]
     # Subtitles inside an MKV are made for this very video.
     subs = {}
     if src.suffix.lower() == ".mkv":
@@ -365,34 +365,20 @@ def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str
 def _rd(job: dict, tmp: Path) -> None:
     job["step"] = "asking Real-Debrid"
     files = json.loads(realdebrid.episodes(job["rd"], job["url"], _Log(job)))
-    if job["season"]:  # ponytail: a file without a season number counts as this season's (one-season packs)
-        files = [f for f in files if realdebrid.numbers(f["name"])[0] in (None, job["season"])]
-    if job["first"]:
-        files.sort(key=lambda f: realdebrid.numbers(f["name"])[1] != job["first"])  # stable: the rest keep their order
-    failed, folder = [], None
-    if job["folder"]:
-        folder = Path(job["folder"]).resolve()
-        if cfg.library(job["key"]).resolve() not in folder.parents:
-            folder = None  # only a folder of this person's library
+    failed = []
     for i, f in enumerate(files, 1):
         prefix = f"{i}/{len(files)} "
         try:
-            # A season with episodes already made: those aren't downloaded again. The show's folder: the one given,
-            # else the one this job's first episode went to, before that the file name's guess.
-            about = json.loads(realdebrid.describe(f["name"], f["single"]))
-            if about["number"]:
+            # An episode named by stremio.py (show, season, number) that's already in the library isn't downloaded again.
+            if job["show"] and job["number"]:
                 kind = job["type"] or ("anime" if job["lang"] == "ja" else "shows")
-                where = folder or cfg.library(job["key"]) / kind / (_ascii(job["show"] or about["show"]) or "video")
-                stem = f"{where.name}_s{about['season'] or 1}_{about['number']:02}"
-                if (where / f"{stem}.kumapie.json").exists():
+                slug = _ascii(job["show"])
+                stem = f"{slug}_s{job['season'] or 1}_{job['number']:02}"
+                if (cfg.library(job["key"]) / kind / slug / f"{stem}.kumapie.json").exists():
                     job["episodes"].append(stem)
-                    folder = where
                     continue
             path = Path(realdebrid.download(job["rd"], f["link"], str(tmp / "download"), _Log(job, prefix)))
-            # Each episode as soon as it's made: kumapie plays the first while the rest of a season downloads.
-            video = _local(job, path, f["name"], f["single"], tmp, prefix)
-            folder = folder or video.parent
-            _episodes(job, [video])
+            _episodes(job, [_local(job, path, f["name"], f["single"], tmp, prefix)])  # each one as soon as it's made
             path.unlink()
         except Exception as e:  # noqa: BLE001 - one bad file doesn't stop a season's others
             failed.append(f"{f['name']}: {str(e)[:100]}")
