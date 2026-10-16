@@ -162,7 +162,17 @@ def _made(tv, lib: str, job: dict, number: int | None) -> str | None:
                  if e["person"] == lib and isinstance(e.get("path"), Path) and e["path"].stem in stems), None)
 
 
-def _start(key: str, person: str, lang: str, type_: str, sid: str, season: bool, q: str) -> dict:
+def _folder(tv, base: str, sid: str) -> str:
+    """The library folder of this show's episodes made from NuvioTV before (any season), or ""."""
+    show = base + ":".join(sid.split(":")[:2 if sid.startswith("kitsu:") else 1]) + ":"
+    for k, eid in _done().items():
+        path = tv.episodes.get(eid, {}).get("path")
+        if k.startswith(show) and isinstance(path, Path):
+            return str(path.parent)
+    return ""
+
+
+def _start(key: str, person: str, lang: str, type_: str, sid: str, season: bool, q: str, folder: str = "") -> dict:
     """Queues the job in the background (Torrentio and Real-Debrid take seconds); answers its stand-in."""
     s, e = numbers(sid)
     job = _running[key] = {"state": "queued", "step": "asking Torrentio", "error": "", "episodes": []}
@@ -173,7 +183,7 @@ def _start(key: str, person: str, lang: str, type_: str, sid: str, season: bool,
             got = jobs.submit({"person": person, "lang": lang, "url": _link(type_, sid, token, season, q), "rd": token,
                                "jimaku": os.environ.get("JIMAKU_API_KEY", "") if lang == "ja" else "",
                                "type": "anime" if sid.startswith("kitsu:") else "movies" if type_ == "movie" else "shows",
-                               **({"season": s or 0, "first": e} if season else {})})
+                               **({"season": s or 0, "first": e, "folder": folder} if season else {})})
             live = next(j for j in jobs.jobs if j["id"] == got["id"])  # the live one, its state changes
         except (ValueError, OSError) as err:
             job.update(state="failed", error=str(err)[:200])
@@ -213,7 +223,7 @@ def prepare(tv, body: dict) -> dict:
     with _lock:
         tv.synced()
         if season and skey and skey not in _running:  # even when this episode is made: the rest of the season
-            _start(skey, person, lang, type_, sid, True, q)
+            _start(skey, person, lang, type_, sid, True, q, _folder(tv, base, sid))
         if eid := _ready(tv, lib, key, skey, number):
             answer = {"state": "ready", "id": eid}
         else:

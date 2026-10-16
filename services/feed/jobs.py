@@ -104,6 +104,8 @@ def submit(body: dict) -> dict:
            "rd": str(body.get("rd") or ""), "jimaku": str(body.get("jimaku") or ""),
            # A season pack (stremio.py): only this season's files, episode [first] before the others.
            "season": int(body.get("season") or 0), "first": int(body.get("first") or 0),
+           # The show's folder when it has episodes already (stremio.py knows it): those aren't downloaded again.
+           "folder": str(body.get("folder") or ""),
            "state": "queued", "step": "", "error": "", "episodes": []}
     jobs.insert(0, job)
     _queue.put(job)
@@ -368,11 +370,15 @@ def _rd(job: dict, tmp: Path) -> None:
     if job["first"]:
         files.sort(key=lambda f: realdebrid.numbers(f["name"])[1] != job["first"])  # stable: the rest keep their order
     failed, folder = [], None
+    if job["folder"]:
+        folder = Path(job["folder"]).resolve()
+        if cfg.library(job["key"]).resolve() not in folder.parents:
+            folder = None  # only a folder of this person's library
     for i, f in enumerate(files, 1):
         prefix = f"{i}/{len(files)} "
         try:
-            # A season with episodes already made: those aren't downloaded again. The show's folder is the one this
-            # job's first episode went to, before that the file name's guess (Jimaku may name it otherwise).
+            # A season with episodes already made: those aren't downloaded again. The show's folder: the one given,
+            # else the one this job's first episode went to, before that the file name's guess.
             about = json.loads(realdebrid.describe(f["name"], f["single"]))
             if about["number"]:
                 kind = job["type"] or ("anime" if job["lang"] == "ja" else "shows")
