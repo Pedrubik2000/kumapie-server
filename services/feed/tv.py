@@ -37,6 +37,7 @@ state\\feed\\tv.db (resume point per episode, scenes seen, seconds watched per d
                                      [pos, epoch s]}, "seen": {scene: [episode, first, last, times]}, "watch": {day:
                                      seconds}, "lwatch": {lang: {day: seconds}}, "lookups": {word: times}, "marked":
                                      {word: [true, 0]}, "gloss": {word: meaning}}
+  POST /api/tv/mark                  {"episodes": [ids], "watched": bool}: mark watched / not watched (every device)
   POST /api/tv/device_watch          {"person", "watch": {lang: {day: seconds}}}: the person's phones' own time
 """
 from __future__ import annotations
@@ -98,6 +99,7 @@ create table if not exists seen (scene text primary key, episode text, first tex
 create table if not exists watch (day text primary key, seconds real);
 create table if not exists lookups (word text, scene text, at text);
 create table if not exists watch_p (day text, person text, seconds real, primary key (day, person));
+create table if not exists unwatched (episode text primary key, at integer);
 """
 
 
@@ -330,7 +332,7 @@ class TV:
             data = json.loads(DEVICE_SEEN.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
-        data[person] = {"seen": seen, "unwatched": unwatched}
+        data[person] = {"seen": seen, "unwatched": unwatched, "at": int(time.time())}
         tmp = DEVICE_SEEN.with_suffix(".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(DEVICE_SEEN)
@@ -360,19 +362,40 @@ class TV:
             data = json.loads(DEVICE_SEEN.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
-        unwatched: dict[str, int] = {}
+        tv_unwatched = dict(db.execute("select episode, at from unwatched"))  # marked on the TV (mark())
+        unwatched: dict[str, int] = dict(tv_unwatched)
         for p in data.values():
             for e, t in p.get("unwatched", {}).items():
                 unwatched[e] = max(t, unwatched.get(e, 0))
         out: dict[str, set[str]] = {}
         for scene, eid, last in db.execute("select scene, episode, last from seen"):
-            if eid in unwatched and datetime.datetime.fromisoformat(last).timestamp() < unwatched[eid]:
+            if eid in unwatched and datetime.datetime.fromisoformat(last).timestamp() <= unwatched[eid]:
                 continue
             out.setdefault(eid, set()).add(scene)
         for p in data.values():
             for scene, eid in p.get("seen", {}).items():
-                out.setdefault(eid, set()).add(scene)
+                # A phone that hasn't synced since the TV's "not watched" still counts the old scenes: not those.
+                if tv_unwatched.get(eid, 0) <= p.get("at", 0):
+                    out.setdefault(eid, set()).add(scene)
         return out
+
+    def mark(self, body: dict) -> dict:
+        """POST /api/tv/mark {"episodes": [ids], "watched": bool}: watched = every scene seen now (no watch time);
+        not watched = a time before which their scenes don't count, on every device (the phones read it from
+        /api/tv/history), and back to the beginning."""
+        self.synced()
+        eps = [self.episodes[e] for e in body.get("episodes", []) if e in self.episodes]
+        now = datetime.datetime.now().isoformat(timespec="seconds")
+        with self.write_lock, self.tv_db() as db:
+            for ep in eps:
+                if body.get("watched"):
+                    for sc in ep["scenes"]:
+                        db.execute("insert into seen values (?, ?, ?, ?, 1) on conflict (scene) do update"
+                                   " set last = excluded.last, times = times + 1", (sc["id"], ep["id"], now, now))
+                else:
+                    db.execute("insert or replace into unwatched values (?, ?)", (ep["id"], int(time.time())))
+                    db.execute("insert or replace into progress values (?, 0, ?)", (ep["id"], now))
+        return {"ok": True, "episodes": len(eps)}
 
     def shows(self, status_of, person: str | None = None) -> dict:
         """[status_of]: a library person's known words (None: their phone never sent any)."""
@@ -717,6 +740,7 @@ class TV:
             q = ",".join("?" * len(people))
             watch = dict(db.execute(f"select day, sum(seconds) from watch_p where person in ({q}) group by day", tuple(people)))
             lookups = dict(db.execute(f"select word, count(*) from lookups where person in ({q}) group by word", tuple(people)))
+            unwatched = dict(db.execute("select episode, at from unwatched"))
             lwatch: dict[str, dict[str, float]] = {}
             for p, day, s in db.execute(f"select person, day, seconds from watch_p where person in ({q})", tuple(people)):
                 days = lwatch.setdefault(LANG.get(p, PERSON.transcript), {})
@@ -724,8 +748,10 @@ class TV:
         if F["person"] not in people:
             pos = {e: v for e, v in pos.items() if e in mine}
             seen = {s: v for s, v in seen.items() if v[0] in mine}
-            return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "marked": {}, "gloss": {}}
-        return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups,
+            unwatched = {e: t for e, t in unwatched.items() if e in mine}
+            return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "marked": {}, "gloss": {},
+                    "unwatched": unwatched}
+        return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "unwatched": unwatched,
                 "marked": {w: [True, 0] for w in self.known_words()},
                 "gloss": {w: g for w in lookups if (g := self.dict_gloss(w))}}
 

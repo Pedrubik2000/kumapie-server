@@ -495,7 +495,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as e:  # OSError: Torrentio or Real-Debrid unreachable; the TV shows the reason
                 return self.send_json({"state": "failed", "step": "", "error": str(e)[:200]})
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
-                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream"):
+                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark"):
             return self.send_error(404)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -509,6 +509,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(tv.device_watch(body))
             if path == "/api/tv/stream":
                 return self.send_json(tv.stream(body))
+            if path == "/api/tv/mark":
+                return self.send_json(tv.mark(body))
             if path == "/api/tv/meta":
                 return self.send_json(tv.set_meta(body))
             if path == "/api/tv/known":
