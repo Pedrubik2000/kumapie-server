@@ -177,7 +177,14 @@ class Player {
         this.video, this.subs),
       $("div", { className: "right" }, this.card, this.trans)));
     this.emptyCard();
-    this.video.addEventListener("loadedmetadata", () => { this.video.currentTime = this.scene?.start || 0; this.draw(true); }, { once: true });
+    this.video.addEventListener("loadedmetadata", () => {
+      this.video.currentTime = this.scene?.start || 0;
+      this.draw(true);
+      // Sound but no picture: a codec this browser can't decode (HEVC in Edge without Microsoft's HEVC extension).
+      if (!this.video.videoWidth) this.video.after($("p", { className: "why", textContent:
+        "This browser can't show this episode's picture (likely HEVC). Sound and subtitles still work; "
+        + "Chrome, or Edge with Microsoft's HEVC Video Extensions, shows it." }));
+    }, { once: true });
     this.video.addEventListener("play", () => this.draw());
     this.video.addEventListener("pause", () => this.draw());
     this.drawTranscript();
