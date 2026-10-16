@@ -422,8 +422,10 @@ class TV:
             if kind and ep["show"] not in todo and not (META / f"{ep['show']}.json").exists():
                 year = re.search(r"_(\d{4})$", ep["show"])
                 title = ep["show_title"] or ep["show"].replace("_", " ")
-                if kind == "youtube":  # searched by one of its videos; PC-made ones without a link stay as they are
-                    title = ep["source"] if str(ep.get("source", "")).startswith("http") else ""
+                if kind == "youtube":  # searched by one of its videos: its link, else the id yt-dlp's file names end with
+                    src = str(ep.get("source", ""))
+                    vid = re.search(r"_([\w-]{11})\.\w+$", src)
+                    title = src if src.startswith("http") else f"https://www.youtube.com/watch?v={vid[1]}" if vid else ""
                 if title:
                     todo[ep["show"]] = (kind, title, int(year[1]) if year else None, ep.get("match"))
         if not todo:
