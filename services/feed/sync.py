@@ -40,6 +40,8 @@ STATE = cfg.state / "feed"
 INDEX = STATE / "sync.json"  # {person: {id: entry + "dir" (relative to the library root) + "stem"}}
 UPLOADS = STATE / "sync-upload"
 DELETED = STATE / "sync-deleted.json"  # {person: [id, ...]}: deleted everywhere
+# {person: {"subs": {"kind|url": sub}, "removed": {"kind|url": epoch}}}: followed channels, shared by their devices
+FOLLOWS = STATE / "follows.json"
 FILES = {"episode.json", "video.mp4", "thumb.jpg"}
 LIBRARY_EXT = {"episode.json": ".kumapie.json", "video.mp4": ".mp4", "thumb.jpg": ".jpg"}
 ID = re.compile(r"^local-[0-9a-f]{12}$")
@@ -249,3 +251,52 @@ if __name__ == "__main__":  # self-check: srt timing
         moved = {f.name for f in (root / "archive/removed").rglob("*.*")}
         assert "x_s1_01.mp4" in moved and "x_s1_01.en.srt" in moved and "x_s1_01_2.mp4" not in moved
     print("ok")
+
+
+# ------------------------------------------------------------ followed channels, the same on every device of a person
+
+def _follows() -> dict:
+    try:
+        return json.loads(FOLLOWS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def follows(person: str) -> dict:
+    """{"subs": [sub, ...]}: what the person follows (each device keeps its own last check)."""
+    return {"subs": list(_follows().get(person, {}).get("subs", {}).values())}
+
+
+def change_follows(person: str, body: dict) -> dict:
+    """A device's changes: {"add": [sub], "remove": ["kind|url"], "initial": bool}. An initial add (a device's list the
+    first time it syncs) doesn't bring back a channel removed on another device; a follow made by hand does."""
+    with _lock:
+        data = _follows()
+        mine = data.setdefault(person, {"subs": {}, "removed": {}})
+        for key in body.get("remove") or []:
+            mine["subs"].pop(str(key), None)
+            mine["removed"][str(key)] = int(time.time())
+        for sub in body.get("add") or []:
+            if not isinstance(sub, dict) or not sub.get("url"):
+                continue
+            key = f"{sub.get('kind', 'shorts')}|{sub['url']}"
+            if body.get("initial") and key in mine["removed"]:
+                continue
+            mine["removed"].pop(key, None)
+            mine["subs"][key] = {k: sub[k] for k in ("url", "name", "kind", "lang", "perRun", "pc", "device") if k in sub}
+        tmp = FOLLOWS.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(FOLLOWS)
+    return follows(person)
+
+
+if __name__ == "__main__":  # self-check on a scratch file
+    import tempfile
+    FOLLOWS = Path(tempfile.mkdtemp()) / "follows.json"
+    a = {"url": "https://www.youtube.com/@a", "kind": "shorts", "name": "A", "device": "Pixel 8a"}
+    b = {"url": "https://www.youtube.com/@b", "kind": "videos", "name": "B", "device": "SM-T970"}
+    assert [x["name"] for x in change_follows("p", {"add": [a, b], "initial": True})["subs"]] == ["A", "B"]
+    assert [x["name"] for x in change_follows("p", {"remove": ["shorts|https://www.youtube.com/@a"]})["subs"]] == ["B"]
+    assert [x["name"] for x in change_follows("p", {"add": [a], "initial": True})["subs"]] == ["B"]  # stays removed
+    assert [x["name"] for x in change_follows("p", {"add": [a]})["subs"]] == ["B", "A"]  # followed again by hand
+    print("follows self-check ok")

@@ -386,6 +386,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(sync.listing(parts[0]))
         if len(parts) == 2 and parts[1] == "deleted" and parts[0] in sync.PEOPLE:
             return self.send_json(sync.deleted(parts[0]))
+        if len(parts) == 2 and parts[1] == "follows" and parts[0] in sync.PEOPLE:
+            return self.send_json(sync.follows(parts[0]))
         if len(parts) == 3 and parts[2] == "status" and sync.valid(parts[0], parts[1]):
             return self.send_json(sync.status(parts[0], parts[1]))
         if len(parts) == 3 and sync.valid(*parts):
@@ -437,6 +439,13 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self.send_error(400, str(e))
             log(f"sync: {parts[0]} uploaded {done['show']} / {done['title']}")
+            return self.send_json(done)
+        if len(parts) == 2 and parts[1] == "follows" and parts[0] in sync.PEOPLE:
+            try:
+                done = sync.change_follows(parts[0], json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))
+            except (ValueError, TypeError, AttributeError) as e:
+                return self.send_error(400, str(e))
+            log(f"sync: {parts[0]} follows {len(done['subs'])} channels")
             return self.send_json(done)
         if len(parts) == 3 and parts[2] == "delete" and sync.valid(parts[0], parts[1]):
             done = sync.delete(parts[0], parts[1])
