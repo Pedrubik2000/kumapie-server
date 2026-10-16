@@ -13,6 +13,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   POST /api/tv/device_seen  {"person", "seen", "unwatched"}: what the person's phones count as seen (tv.py)
   POST /api/tv/device_watch {"person", "watch": {lang: {day: seconds}}}: the phones' own time per language (tv.py)
   GET  /api/models/<file>   the Japanese splitter's data files (MODEL_FILES, from state\\dicts)
+  GET  /api/models/ja-dicts[/<zip>]  Japanese Yomitan zips the TVs import for mining (list, file; state\\dicts\\yomitan-ja)
   POST /api/tv/meta         {"show", "kind", "source", "id"}: "Fix match" for a PC show (tv.py, meta.py)
   /api/tv/...             the kumapie-tv app's API (Android TV, whole episodes scene by scene): see tv.py
   /api/sync/...           episodes made on phones/tablets, kept here for the person's other devices: see sync.py
@@ -212,6 +213,8 @@ VOICES = {"de": F.get("tts_voice", "de-DE-KatjaNeural"), "en": "en-US-AvaNeural"
 # Jiten's word database (tools\kumapie\jiten_lexicon.py) and Jiten's Sudachi user dictionary, rebuilt for Sudachi
 # Java 0.8: the phones download them for kumapie's Japanese splitter (kumapie_plan.md item 26b).
 MODEL_FILES = {"jiten-lexicon.tsv.gz", "jiten_user_core.dic"}
+# Yomitan zips the TVs import for Japanese mining (kumapie-tv TvMining.kt); "[Bilingual] JMdict.zip" names its group.
+JA_DICTS = "yomitan-ja"
 
 
 def tts(word, lang="de"):
@@ -289,6 +292,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.sync_get(path.split("/")[3:])
         if path == "/api/aniworld":
             return self.send_json(jobs.listing())
+        if path == "/api/models/ja-dicts" or path.startswith("/api/models/ja-dicts/"):
+            d = (cfg.state / "dicts" / JA_DICTS).resolve()
+            if path == "/api/models/ja-dicts":
+                return self.send_json(sorted(f.name for f in d.glob("*.zip")) if d.is_dir() else [])
+            f = (d / urllib.parse.unquote(path.rsplit("/", 1)[-1])).resolve()
+            if f.parent == d and f.suffix == ".zip" and f.is_file():
+                return self.send_file(f, "application/zip", cache=True)
+            return self.send_error(404)
         if path.startswith("/api/models/"):  # files the phones' Japanese splitter needs (item 26b), from state\dicts
             name = path.rsplit("/", 1)[-1]
             f = cfg.state / "dicts" / name
