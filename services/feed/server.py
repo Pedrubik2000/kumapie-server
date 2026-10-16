@@ -270,7 +270,7 @@ class Handler(BaseHTTPRequestHandler):
                 ok = word in feed["words"] or word in tv.words
             f = tts(word, query.get("lang", ["de"])[0]) if ok else None
             return self.send_file(f, "audio/mpeg", cache=True) if f else self.send_error(404)
-        name = "index.html" if path == "/" else path.lstrip("/")
+        name = {"/": "index.html", "/pc": "pc.html"}.get(path) or path.lstrip("/")  # /pc: kumapie on the PC
         f = STATIC / name
         if "/" not in name and "\\" not in name and f.is_file():
             ctype = {".webmanifest": "application/manifest+json", ".js": "text/javascript"}.get(

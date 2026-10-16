@@ -599,7 +599,10 @@ class TV:
             db.execute("insert into lookups values (?, ?, ?, ?)",
                        (word, scene, datetime.datetime.now().isoformat(timespec="seconds"), person))
             n = db.execute("select count(*) from lookups where word = ? and person = ?", (word, person)).fetchone()[0]
-        return {"ok": True, "n": n}
+        # Every sense, for the PC page's word card (the TV and phones show their own)
+        ep = next((e for e in self.episodes.values() if any(sc["id"] == scene for sc in e["scenes"])), None) if scene else None
+        _kana, ss = dicts.senses(ep["pair"], self.lemmas.get(word, ""), word) if ep and ep.get("pair") else ("", [])
+        return {"ok": True, "n": n, "senses": ss}
 
     # ------------------------------------------------------------ words marked known
 
