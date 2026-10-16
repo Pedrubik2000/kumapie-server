@@ -74,3 +74,6 @@ details.opts > div { position: absolute; right: 0; z-index: 2; background: var(-
 details.opts label { display: block; padding: 2px 0; }
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
 dialog td:first-child { padding-right: 16px; color: var(--accent); }
+#card .status { margin-top: 8px; padding: 6px 8px; border-radius: 6px; background: var(--bg); }
+#card form.mine { display: grid; gap: 6px; margin-top: 8px; }
+#card form.mine select, #card form.mine textarea { width: 100%; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px; }

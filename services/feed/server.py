@@ -43,6 +43,7 @@ import dicts  # noqa: E402
 import sync  # noqa: E402
 import known  # noqa: E402
 import jobs  # noqa: E402
+import anki  # noqa: E402
 
 F = cfg.raw["feed"]
 PORT = cfg.services["feed_port"]
@@ -243,6 +244,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
         path = urllib.parse.unquote(url.path)
+        if path.startswith("/api/anki/"):
+            return self.anki(path, urllib.parse.parse_qs(url.query))
         if path.startswith("/api/tv"):
             return self.tv_get(path, urllib.parse.parse_qs(url.query).get("person", [None])[0])
         if path.startswith("/api/sync/"):
@@ -278,6 +281,39 @@ class Handler(BaseHTTPRequestHandler):
             if ctype.startswith("text/") or ctype.endswith("json"):
                 ctype += "; charset=utf-8"
             return self.send_file(f, ctype, cache=False)
+        self.send_error(404)
+
+    def anki(self, path, query, body=None):
+        """kuma3 desktop through AnkiConnect (services\feed\anki.py), for the PC page; 503 while kuma3 is closed."""
+        name = path.rsplit("/", 1)[-1]
+        try:
+            if name == "status":
+                return self.send_json({"up": anki.up(), "synced": anki.synced_at})
+            if name == "cards":
+                return self.send_json(anki.cards(query.get("lang", ["de"])[0]))
+            if body is None:
+                return self.send_error(404)
+            if name == "rate":
+                done = anki.rate(str(body.get("lang", "")), str(body.get("word", "")), int(body.get("ease", 0)))
+                log(f"anki: rated {body.get('word')!r} ease {body.get('ease')}: {done['answered']} of {done['cards']} cards")
+                return self.send_json(done)
+            if name == "mine":
+                eid = str(body.get("episode", ""))
+                ep, video = tv.episode(eid, status_of), tv.video(eid)
+                if not ep or not video:
+                    return self.send_error(404)
+                done = anki.mine(ep, video, tv.ffmpeg, tts, body)
+                log(f"anki: mined {body.get('word') or 'a sentence'} from {ep['show']} {ep['title']} into {done['deck']}")
+                return self.send_json(done)
+            simple = {"undo": anki.undo, "sync": anki.sync}
+            if name in simple:
+                return self.send_json(simple[name]())
+            if name in ("delete", "browse"):
+                return self.send_json(getattr(anki, name)(int(body.get("note", 0))))
+        except anki.Closed:
+            return self.send_error(503, "kuma3 is closed")
+        except (ValueError, TypeError, KeyError) as e:
+            return self.send_error(400, str(e)[:200])
         self.send_error(404)
 
     def tv_get(self, path, person=None):
@@ -377,6 +413,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(400, str(e))
             log(f"sync: {parts[0]} re-timed {done['show']} / {done['title']} ({done['shifted']:+.2f} s)")
             return self.send_json(done)
+        if path.startswith("/api/anki/"):
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            except ValueError:
+                return self.send_error(400)
+            return self.anki(path, {}, body)
         if path == "/api/aniworld":
             try:
                 job = jobs.submit(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))

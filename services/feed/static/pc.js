@@ -4,7 +4,8 @@
 
 const app = document.getElementById("app");
 const $ = (tag, props = {}, ...kids) => { const el = Object.assign(document.createElement(tag), props); el.append(...kids); return el; };
-const STATE = { k: "known", u: "new word", d: "in a deck", b: "mined" };
+const STATE = { k: "known", u: "new word", d: "due today", b: "mined, not reviewed yet", n: "learning" };
+const DECKS = { de: "Deutsch Mined", en: "English Mined", ja: "Japanese Mined" };
 const LANGS = { de: "Deutsch", en: "English", ja: "日本語" };
 const MODES = ["hidden", "blurred", "target", "both", "english"];
 
@@ -16,6 +17,26 @@ const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Typ
 let person = new URLSearchParams(location.search).get("person");
 let shows = null;       // /api/tv/shows for the person, visual novels left out (not on the PC)
 let player = null;      // the open player, closed on leaving it
+const anki = { up: false, synced: 0 };  // kuma3 desktop through dojo-feed's /api/anki (AnkiConnect)
+const fetchOk = url => fetch(url).then(r => r.ok ? r : Promise.reject(r.status));
+
+/** Is kuma3 open? Asked on load and whenever the page gets focus (no timer). Repaints the player when it changes. */
+async function checkAnki() {
+  const was = anki.up;
+  try { Object.assign(anki, await (await fetchOk("api/anki/status")).json()); } catch { anki.up = false; }
+  const pill = document.getElementById("anki");
+  const at = anki.synced ? ` · synced ${new Date(anki.synced * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+  pill.textContent = anki.up ? `kuma3 ● connected${at}` : "kuma3 closed: colours from your phone, no mining";
+  pill.className = `pill ${anki.up ? "on" : "off"}`;
+  pill.title = anki.up ? "Don't review on the phone during a PC sitting: both sync through AnkiWeb." : "Open kuma3 desktop to rate and mine.";
+  if (was !== anki.up && player) player.reloadCards();
+}
+async function syncAnki() {
+  if (!anki.up) return;
+  try { Object.assign(anki, await post("api/anki/sync", {})); } catch (e) { console.error(e); }
+  checkAnki();
+}
+addEventListener("focus", checkAnki);
 
 async function loadShows() {
   if (!person) person = (await (await fetch("api/tv/people")).json())[0].id;  // the config's first sync person: Pedro
@@ -118,7 +139,14 @@ class Player {
   get pos() { return this.video.currentTime; }
   get playing() { return !this.video.paused; }
   level(sc) { return sc.german ? new Set(sc.cues.flatMap(c => c.seg.filter(([, w]) => w && this.state(w) === "u").map(([, w]) => w))).size : null; }
-  state(w) { const x = this.words[w]; return !x ? "k" : x.m ? "k" : x.s; }
+  /** The colour (KnownWords.shown): marked known white; kuma3's own card (d green, b blue, k white, learning red);
+   *  no card of its own (or kuma3 closed): the known words the phone sent. */
+  state(w) {
+    const x = this.words[w];
+    if (!x || x.m) return "k";
+    const c = this.cards?.forms[w];
+    return !c ? x.s : c === "n" ? "u" : c;
+  }
   known(sc) { return this.opts.playThroughKnown && this.level(sc) === 0; }
   pausesAtEnd(sc) { return this.opts.pauseAtSceneEnd && !this.known(sc); }
 
@@ -244,6 +272,7 @@ class Player {
 
   close() {
     this.report(true);
+    if (anki.up) navigator.sendBeacon("api/anki/sync");  // after a sitting: kuma3 -> AnkiWeb -> the phone
     clearInterval(this.timer);
     document.removeEventListener("keydown", this.onKey);
     removeEventListener("pagehide", this.onLeave);
@@ -332,40 +361,127 @@ class Player {
 
   emptyCard() { this.picked = null; this.card.replaceChildren($("p", { className: "empty", textContent: "Click a coloured word" })); }
 
+  /** A word clicked: pause, fill the card, then every sense from the dictionaries (the line's own sense first). */
   async pick(w, cue, sc) {
     this.video.pause();
-    this.picked = { w, cue, sc };
     const x = this.words[w] || {};
-    const quote = $("blockquote");
-    for (const [text, ww] of cue.seg) quote.append(ww === w ? $("b", { textContent: text }) : text);
-    const senses = $("ol", {}, $("li", { textContent: sc.g?.[w] || x.g || "…" }));
-    const noAnki = "Open kuma3 to rate and mine";
-    const rate = ["Again", "Hard", "Good", "Easy"].map((l, i) => $("button", { textContent: `${i + 1} ${l}`, disabled: true, title: noAnki }));
-    this.card.replaceChildren(
-      $("h3", { textContent: x.lemma || w }, x.r ? $("small", { textContent: `  ${x.r}` }) : ""),
-      $("div", { className: "why", textContent: STATE[this.state(w)] + (x.n ? ` · looked up ${x.n}×` : "") }),
-      senses, quote,
-      $("div", { className: "acts" }, ...rate,
-        $("button", { textContent: "M Mine", disabled: true, title: noAnki }),
-        $("button", { textContent: x.m ? "K Not known" : "K Known", onclick: () => this.markKnown(w) }),
-        $("button", { textContent: "A 🔊", onclick: () => this.hear(w) })),
-      $("div", { className: "why", textContent: noAnki + " (the bridge comes next)" }));
+    this.picked = { w, cue, sc, senses: [sc.g?.[w] || x.g].filter(Boolean), status: null, mining: false };
+    this.renderCard();
     this.draw(true);
     this.looked++;
     try {
       const r = await post("api/tv/lookup", { word: w, scene: sc.id });
       x.n = r.n;
-      // the sense that fits this line first, as the phone's "In this line"
-      const all = [...new Set([sc.g?.[w], x.g, ...(r.senses || [])].filter(Boolean))];
-      if (this.picked?.w === w) senses.replaceChildren(...(all.length ? all : ["No meaning in the dictionaries"]).map(s => $("li", { textContent: s })));
+      if (this.picked?.w !== w) return;
+      this.picked.senses = [...new Set([sc.g?.[w], x.g, ...(r.senses || [])].filter(Boolean))];
+      if (!this.picked.mining) this.renderCard();
     } catch (e) { console.error(e); }
   }
+
+  /** The card for [this.picked]: word, state, senses, the line, actions, then the mine form or the last answer. */
+  renderCard() {
+    const { w, cue, sc, senses, status } = this.picked;
+    const x = this.words[w] || {};
+    const quote = $("blockquote");
+    for (const [text, ww] of cue.seg) quote.append(ww === w ? $("b", { textContent: text }) : text);
+    const own = this.cards?.forms[w];
+    const why = !anki.up ? "Open kuma3 to rate and mine" : !own ? "No card yet: mine it to rate it" : "";
+    const rate = ["Again", "Hard", "Good", "Easy"].map((l, i) => $("button", { textContent: `${i + 1} ${l}`,
+      disabled: !anki.up || !own, title: why, onclick: () => this.rate(i + 1) }));
+    this.card.replaceChildren(
+      $("h3", { textContent: x.lemma || w }, x.r ? $("small", { textContent: `  ${x.r}` }) : ""),
+      $("div", { className: "why", textContent: STATE[this.state(w)] + (x.n ? ` · looked up ${x.n}×` : "") }),
+      $("ol", {}, ...(senses.length ? senses : ["No meaning in the dictionaries"]).map(s => $("li", { textContent: s }))), quote,
+      $("div", { className: "acts" }, ...rate,
+        $("button", { textContent: "M Mine", disabled: !anki.up, title: anki.up ? "" : why, onclick: () => this.mineForm() }),
+        $("button", { textContent: x.m ? "K Not known" : "K Known", onclick: () => this.markKnown(w) }),
+        $("button", { textContent: "A 🔊", onclick: () => this.hear(w) })),
+      why ? $("div", { className: "why", textContent: why }) : "",
+      status || "");
+  }
+  /** A line in the card under the actions ("Answered: Good", "Added to Deutsch Mined"), with an optional button. */
+  say(text, button) {
+    if (!this.picked) return;
+    this.picked.status = $("div", { className: "status" }, text, button ? " " : "", button || "");
+    this.picked.mining = false;
+    this.renderCard();
+  }
+
+  async reloadCards() {
+    try { this.cards = anki.up ? await (await fetchOk(`api/anki/cards?lang=${this.ep.lang}`)).json() : null; }
+    catch (e) { this.cards = null; await checkAnki(); }
+    this.drawTranscript();
+    this.draw(true);
+  }
+
+  /** 1-4 on the card: every due card of the word, as the phone (one rating answers them all). */
+  async rate(ease) {
+    const w = this.picked?.w;
+    if (!w || !anki.up || !this.cards?.forms[w]) return;
+    const label = ["Again", "Hard", "Good", "Easy"][ease - 1];
+    try {
+      const r = await post("api/anki/rate", { lang: this.ep.lang, word: w, ease });
+      await this.reloadCards();
+      this.say(`Answered: ${label}` + (r.cards > 1 ? ` (${r.answered} cards)` : ""),
+        $("button", { textContent: "Undo", onclick: () => this.undoRating(r.answered) }));
+    } catch (e) { this.say(`Couldn't rate: ${e}`); }
+  }
+  async undoRating(n) {
+    try {
+      for (let i = 0; i < n; i++) await post("api/anki/undo", {});
+      await this.reloadCards();
+      this.say("Rating undone");
+    } catch (e) { this.say(`Couldn't undo: ${e}. Ctrl+Z in kuma3`); }
+  }
+
+  /** M: the mine form in the card (no sheet). Enter adds, Esc closes. */
+  mineForm() {
+    const p = this.picked;
+    if (!p || !anki.up) return;
+    const deck = DECKS[this.ep.lang];
+    const note = this.cards?.notes[p.w];
+    if (note) return this.say(`Already in ${deck}`, $("button", { textContent: "Open in Anki", onclick: () => post("api/anki/browse", { note }) }));
+    p.mining = true;
+    const type = pref("mineType", "word");
+    const radio = (v, label) => $("label", {}, $("input", { type: "radio", name: "kind", value: v, checked: type === v }), ` ${label} `);
+    const sense = $("select", { name: "gloss" }, ...p.senses.map(s => $("option", { value: s, textContent: s })));
+    const en = p.sc.english.filter(e => e[1] > p.cue.start && e[0] < p.cue.end).map(e => e[2]).join(" ");
+    const english = $("textarea", { name: "english", rows: 2, value: en });
+    const form = $("form", { className: "mine" },
+      $("div", {}, radio("word", "Word card"), radio("sentence", "Sentence card")),
+      p.senses.length ? sense : "", english,
+      $("div", { className: "acts" }, $("button", { type: "submit", textContent: `Add to ${deck}` }),
+        $("button", { type: "button", textContent: "Cancel", onclick: () => { p.mining = false; this.renderCard(); } })));
+    form.onsubmit = e => { e.preventDefault(); this.mine(form.kind.value, sense.value, english.value); };
+    english.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } };
+    form.onkeydown = e => { if (e.key === "Escape") { p.mining = false; this.renderCard(); } };
+    this.card.append(form);
+    form.querySelector("input:checked").focus();
+  }
+  async mine(kind, gloss, english) {
+    const p = this.picked;
+    setPref("mineType", kind);
+    this.say(this.ep.lang === "ja" ? "Cutting the line's audio…" : "Cutting the clip…");
+    try {
+      const r = await post("api/anki/mine", { episode: this.ep.id, scene: p.sc.id, line: p.sc.cues.indexOf(p.cue),
+        word: kind === "word" ? p.w : null, surface: p.cue.seg.find(([, w]) => w === p.w)?.[0], gloss, english });
+      await this.reloadCards();
+      const undo = $("button", { textContent: "Undo", onclick: async () => {
+        await post("api/anki/delete", { note: r.note }).catch(console.error);
+        await this.reloadCards();
+        this.say("Card removed");
+      } });
+      this.say(`Added to ${r.deck}`, undo);
+      setTimeout(() => undo.remove(), 10000);
+    } catch (e) { this.say(`Couldn't mine: ${e}`); }
+  }
+
   hear(w) { new Audio(`api/tts?w=${encodeURIComponent(w)}&lang=${this.ep.lang}`).play().catch(() => {}); }
   async markKnown(w) {
     const x = this.words[w] || (this.words[w] = { s: "u" });
     try { await post("api/tv/known", { word: w, known: !x.m }); x.m = !x.m; } catch (e) { return console.error(e); }
     this.drawTranscript();
-    if (this.picked?.w === w) this.pick(w, this.picked.cue, this.picked.sc);
+    if (this.picked?.w === w) this.renderCard();
   }
 
   done() {
@@ -382,7 +498,7 @@ class Player {
   // ---------------------------------------------------- keys
 
   key(e) {
-    if (e.target.matches("input, textarea, select") || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.target.closest("input, textarea, select, form, dialog") || e.ctrlKey || e.altKey || e.metaKey) return;
     const onWord = e.target.classList?.contains("w");
     const k = e.key;
     const act = {
@@ -391,7 +507,8 @@ class Player {
       ArrowRight: () => this.nextScene(),
       ArrowLeft: () => e.shiftKey ? this.playScene(this.index) : this.previousScene(),
       r: () => this.replayLine(), s: () => this.cycleMode(),
-      k: () => this.picked && this.markKnown(this.picked.w), a: () => this.picked && this.hear(this.picked.w),
+      k: () => this.picked && this.markKnown(this.picked.w), m: () => this.picked && this.mineForm(),
+      1: () => this.rate(1), 2: () => this.rate(2), 3: () => this.rate(3), 4: () => this.rate(4), a: () => this.picked && this.hear(this.picked.w),
       Escape: () => this.emptyCard(),
       "?": () => document.getElementById("help").showModal(),
     }[k.length === 1 ? k.toLowerCase() : k];
@@ -407,6 +524,7 @@ async function openEpisode(id) {
   const ep = await r.json();
   langTabs(ep.lang);
   player = new Player(ep);
+  player.reloadCards();
 }
 
 // ------------------------------------------------------------ routes: #/, #/show/<id>, #/ep/<id>
@@ -420,4 +538,5 @@ async function route() {
   home();
 }
 addEventListener("hashchange", route);
+checkAnki().then(syncAnki);  // the phone's latest reviews before the sitting
 route();
