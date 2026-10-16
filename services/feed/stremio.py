@@ -32,6 +32,9 @@ DONE = cfg.state / "feed" / "stremio.json"  # {"<person>|<lang>|<id>": episode i
 NAMES = {"de": "Deutsch", "en": "English", "ja": "日本語"}
 ID = re.compile(r"^(tt\d+|kitsu:\d+)(:\d+:\d+|:\d+)?$")
 SIZE = re.compile(r"💾\s*([\d.]+)\s*([KMGT]B)")
+QUALITIES = ["BD", "4k", "2k", "1080p", "720p", "480p"]  # the add-on's order
+RESOLUTION = {"4k": r"\b(4k|2160p)\b", "2k": r"\b(2k|1440p)\b", "1080p": r"\b1080p\b", "720p": r"\b720p\b",
+              "480p": r"\b(480p|576p|sd)\b"}
 HASH = re.compile(r"/realdebrid/[^/]+/([0-9a-fA-F]{40})/")
 AHEAD = 2  # episodes queued after the one being watched
 _lock = threading.Lock()
@@ -45,13 +48,42 @@ def manifest(person: str) -> dict:
 
 
 def streams(person: str, type_: str, sid: str) -> dict:
+    """One entry per quality Torrentio has (with the file's size), language and episode / whole season."""
     langs = [lang for lang in (["ja"] if sid.startswith("kitsu:") else sync.PEOPLE[person]) if lang in sync.PEOPLE[person]]
     seasons = [False, True] if numbers(sid)[1] is not None else [False]
-    return {"streams": [{"name": "kumapie",
-                         "title": f"{NAMES.get(lang, lang)}: " + ("whole season on the PC" if season else "prepare on the PC"),
-                         "externalUrl": "kumapie://prepare?" + urllib.parse.urlencode(
-                             {"person": person, "lang": lang, "type": type_, "id": sid, **({"season": "1"} if season else {})})}
-                        for season in seasons for lang in langs]}
+    try:
+        found = _found(type_, sid, os.environ.get("RD_API_TOKEN", ""))
+    except OSError:  # Torrentio down: no entries rather than an error in NuvioTV
+        found = []
+    out = []
+    for q in QUALITIES:
+        if not any(q in qualities(s) for s in found):
+            continue
+        for season in seasons:
+            best = pick(found, season, q)
+            if season and not _pack(best):
+                continue  # no season pack in this quality
+            gb = _size(best["title"])
+            size = (f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1000:.0f} MB") + (" an episode" if season else "")
+            if q == "BD":  # which resolution the Blu-ray file is
+                size = " ".join(sorted(qualities(best) - {"BD"})) + " · " + size
+            slow = "" if "RD+" in best.get("name", "") else " · not on Real-Debrid yet (slower)"
+            for lang in langs:
+                out.append({"name": f"kumapie\n{q}",
+                            "title": f"{NAMES.get(lang, lang)} · {'whole season' if season else 'this one'} · 💾 {size}{slow}",
+                            "externalUrl": "kumapie://prepare?" + urllib.parse.urlencode(
+                                {"person": person, "lang": lang, "type": type_, "id": sid, "q": q,
+                                 **({"season": "1"} if season else {})})})
+    return {"streams": out}
+
+
+def qualities(s: dict) -> set[str]:
+    """A Torrentio stream's qualities: its resolution (the name's second line), plus BD for a Blu-ray source."""
+    name, title = s.get("name", "").lower(), s.get("title", "").lower()
+    got = {q for q, pat in RESOLUTION.items() if re.search(pat, name)}
+    if re.search(r"blu-?ray|\bbd(rip|remux)?\b|remux", title):
+        got.add("BD")
+    return got
 
 
 def numbers(sid: str) -> tuple[int | None, int | None]:
@@ -75,13 +107,13 @@ def _pack(s: dict) -> bool:
     return bool(name) and name not in s.get("title", "").split("\n")[0]
 
 
-def pick(found: list[dict], pack: bool = False) -> dict:
-    """Torrentio's streams -> the one to download: cached on Real-Debrid, 1080p, smallest file (the PC downloads it
-    all); [pack]: a season pack if there is one."""
+def pick(found: list[dict], pack: bool = False, q: str = "1080p") -> dict:
+    """Torrentio's streams -> the one to download: quality [q] if there is one, cached on Real-Debrid, smallest file
+    (the PC downloads it all); [pack]: a season pack if there is one."""
+    found = [s for s in found if q in qualities(s)] or found
     found = [s for s in found if _pack(s)] or found if pack else found
     cached = [s for s in found if "RD+" in s.get("name", "")] or found
-    hd = [s for s in cached if "1080p" in s.get("name", "")] or cached
-    return min(hd, key=lambda s: _size(s.get("title", "")))
+    return min(cached, key=lambda s: _size(s.get("title", "")))
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -89,13 +121,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _link(type_: str, sid: str, token: str, pack: bool) -> str:
-    """The Real-Debrid link of the best Torrentio file for this movie or episode; [pack]: its season pack's magnet."""
+def _found(type_: str, sid: str, token: str) -> list[dict]:
     with _get(f"{TORRENTIO}/realdebrid={token}/stream/{type_}/{urllib.parse.quote(sid)}.json") as r:
-        found = json.load(r).get("streams", [])
+        return json.load(r).get("streams", [])
+
+
+def _link(type_: str, sid: str, token: str, pack: bool, q: str) -> str:
+    """The Real-Debrid link of the best Torrentio file for this movie or episode; [pack]: its season pack's magnet."""
+    found = _found(type_, sid, token)
     if not found:
         raise ValueError("Torrentio found nothing for this")
-    best = pick(found, pack)
+    best = pick(found, pack, q)
     if pack and (m := HASH.search(best["url"])):
         return f"magnet:?xt=urn:btih:{m[1]}"
     # Torrentio's resolve link answers 302 to the file on Real-Debrid's servers.
@@ -126,7 +162,7 @@ def _made(tv, lib: str, job: dict, number: int | None) -> str | None:
                  if e["person"] == lib and isinstance(e.get("path"), Path) and e["path"].stem in stems), None)
 
 
-def _start(key: str, person: str, lang: str, type_: str, sid: str, season: bool) -> dict:
+def _start(key: str, person: str, lang: str, type_: str, sid: str, season: bool, q: str) -> dict:
     """Queues the job in the background (Torrentio and Real-Debrid take seconds); answers its stand-in."""
     s, e = numbers(sid)
     job = _running[key] = {"state": "queued", "step": "asking Torrentio", "error": "", "episodes": []}
@@ -134,7 +170,7 @@ def _start(key: str, person: str, lang: str, type_: str, sid: str, season: bool)
     def run():
         token = os.environ.get("RD_API_TOKEN", "")
         try:
-            got = jobs.submit({"person": person, "lang": lang, "url": _link(type_, sid, token, season), "rd": token,
+            got = jobs.submit({"person": person, "lang": lang, "url": _link(type_, sid, token, season, q), "rd": token,
                                "jimaku": os.environ.get("JIMAKU_API_KEY", "") if lang == "ja" else "",
                                "type": "anime" if sid.startswith("kitsu:") else "movies" if type_ == "movie" else "shows",
                                **({"season": s or 0, "first": e} if season else {})})
@@ -164,6 +200,9 @@ def _ready(tv, lib: str, key: str, skey: str | None, number: int | None) -> str 
 def prepare(tv, body: dict) -> dict:
     person, lang = str(body.get("person", "")), str(body.get("lang", ""))
     type_, sid, season = str(body.get("type", "")), str(body.get("id", "")), body.get("season") == "1"
+    q = str(body.get("q") or "1080p")
+    if q not in QUALITIES:
+        raise ValueError(f"unknown quality {q!r}")
     lib = sync.PEOPLE.get(person, {}).get(lang)
     if not lib or type_ not in ("movie", "series") or not ID.match(sid):
         raise ValueError("bad prepare request")
@@ -174,7 +213,7 @@ def prepare(tv, body: dict) -> dict:
     with _lock:
         tv.synced()
         if season and skey and skey not in _running:  # even when this episode is made: the rest of the season
-            _start(skey, person, lang, type_, sid, True)
+            _start(skey, person, lang, type_, sid, True, q)
         if eid := _ready(tv, lib, key, skey, number):
             answer = {"state": "ready", "id": eid}
         else:
@@ -190,13 +229,13 @@ def prepare(tv, body: dict) -> dict:
                     return {"state": "failed", "step": "", "error": job["error"]}
                 job = None
             if not job:
-                job = _start(key, person, lang, type_, sid, False)
+                job = _start(key, person, lang, type_, sid, False, q)
             answer = {"state": job["state"], "step": job["step"], "error": job["error"]}
         if number is not None and not season:
             for n in range(number + 1, number + 1 + AHEAD):  # ready by the time this one ends
                 nid = sid.rsplit(":", 1)[0] + f":{n}"
                 if base + nid not in _running and skey not in _running and _done().get(base + nid) not in tv.episodes:
-                    _start(base + nid, person, lang, type_, nid, False)
+                    _start(base + nid, person, lang, type_, nid, False, q)
         return answer
 
 
@@ -209,6 +248,8 @@ if __name__ == "__main__":
           "behaviorHints": {"filename": "Show S01E01.mkv"}}]
     assert pick(t)["url"] == "c" and pick(t, pack=True)["url"] == "e", pick(t)
     assert pick(t[:4], pack=True)["url"] == "c"  # no pack: the best file
+    assert qualities(t[0]) == {"4k"} and qualities({"name": "x\n1080p", "title": "Show BluRay 1080p"}) == {"1080p", "BD"}
+    assert pick(t, q="4k")["url"] == "a" and pick(t, q="720p")["url"] == "c"  # none in 720p: the best of all
     assert ID.match("kitsu:43248:1") and ID.match("tt0903747:1:2") and ID.match("tt0111161")
     assert not ID.match("tt1/../x")
     assert numbers("tt0903747:1:2") == (1, 2) and numbers("kitsu:43248:5") == (None, 5) and numbers("tt1") == (None, None)
