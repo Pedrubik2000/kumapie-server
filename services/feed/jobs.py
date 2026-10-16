@@ -367,13 +367,26 @@ def _rd(job: dict, tmp: Path) -> None:
         files = [f for f in files if realdebrid.numbers(f["name"])[0] in (None, job["season"])]
     if job["first"]:
         files.sort(key=lambda f: realdebrid.numbers(f["name"])[1] != job["first"])  # stable: the rest keep their order
-    failed = []
+    failed, folder = [], None
     for i, f in enumerate(files, 1):
         prefix = f"{i}/{len(files)} "
         try:
+            # A season with episodes already made: those aren't downloaded again. The show's folder is the one this
+            # job's first episode went to, before that the file name's guess (Jimaku may name it otherwise).
+            about = json.loads(realdebrid.describe(f["name"], f["single"]))
+            if about["number"]:
+                kind = job["type"] or ("anime" if job["lang"] == "ja" else "shows")
+                where = folder or cfg.library(job["key"]) / kind / (_ascii(job["show"] or about["show"]) or "video")
+                stem = f"{where.name}_s{about['season'] or 1}_{about['number']:02}"
+                if (where / f"{stem}.kumapie.json").exists():
+                    job["episodes"].append(stem)
+                    folder = where
+                    continue
             path = Path(realdebrid.download(job["rd"], f["link"], str(tmp / "download"), _Log(job, prefix)))
             # Each episode as soon as it's made: kumapie plays the first while the rest of a season downloads.
-            _episodes(job, [_local(job, path, f["name"], f["single"], tmp, prefix)])
+            video = _local(job, path, f["name"], f["single"], tmp, prefix)
+            folder = folder or video.parent
+            _episodes(job, [video])
             path.unlink()
         except Exception as e:  # noqa: BLE001 - one bad file doesn't stop a season's others
             failed.append(f"{f['name']}: {str(e)[:100]}")
