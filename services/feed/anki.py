@@ -222,9 +222,10 @@ def mine(ep: dict, video: Path, ffmpeg: str, word_audio, body: dict) -> dict:
         line_file = store(tmp / "line.mp3", f"{show}_{ms}.mp3")
         if "Video" in names:  # the front plays word audio -> sentence audio -> the scene's clip
             s0, s1 = sc["start"], sc["end"]
-            # The phone's WebM: VP9 480p 280 kbps, keyframe every 10 s, Opus 64 kbps (the template plays .webm only).
+            # The phone's WebM: VP9 480p ~280 kbps, keyframe every 10 s, Opus 64 kbps (the template plays .webm only).
+            # Realtime VP9 ignores a plain -b:v (670 kbps out); -crf 45 with it lands near the phone's 360-540 kbps.
             ffmpeg_cut(ffmpeg, ["-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", str(video), "-vf", "scale=-2:480",
-                                "-c:v", "libvpx-vp9", "-b:v", "280k", "-g", "240", "-deadline", "realtime", "-cpu-used", "8",
+                                "-c:v", "libvpx-vp9", "-crf", "45", "-b:v", "280k", "-g", "240", "-deadline", "realtime", "-cpu-used", "8",
                                 "-c:a", "libopus", "-b:a", "64k", str(tmp / "clip.webm")])
             clip = store(tmp / "clip.webm", f"{show}_{int(s0 * 1000)}-{int(s1 * 1000)}.webm")
             fields["Video"] = f"[audio:{line_file}][audio:{clip}]"
