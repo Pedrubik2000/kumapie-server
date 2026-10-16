@@ -217,9 +217,10 @@ def mine(ep: dict, video: Path, ffmpeg: str, word_audio, body: dict) -> dict:
         tmp = Path(tmp)
         start, end = max(cues[0]["start"] - 0.25, 0), cues[-1]["end"] + 0.25
         ms = f"{int(start * 1000)}-{int(end * 1000)}"
-        ffmpeg_cut(ffmpeg, ["-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(video), "-vn", "-c:a", "libmp3lame",
-                            "-q:a", "4", str(tmp / "line.mp3")])
-        line_file = store(tmp / "line.mp3", f"{show}_{ms}.mp3")
+        # As the phone's (Media3 AAC, ~600 kbps): a 94 kbps MP3 sounded unlike the other cards (Pedro, 2026-10-15).
+        ffmpeg_cut(ffmpeg, ["-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(video), "-vn", "-c:a", "aac",
+                            "-b:a", "320k", str(tmp / "line.m4a")])
+        line_file = store(tmp / "line.m4a", f"{show}_{ms}.m4a")
         if "Video" in names:  # the front plays word audio -> sentence audio -> the scene's clip
             s0, s1 = sc["start"], sc["end"]
             # The phone's WebM: VP9 480p ~280 kbps, keyframe every 10 s, Opus 64 kbps (the template plays .webm only).

@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -240,6 +241,42 @@ def tts(word, lang="de"):
     return out if out.exists() else None
 
 
+# A person saying the word, as the phone's mined cards have (Dictionary.recording): the phone's index of Wiktionary's
+# recordings (<lang>-recordings.sqlite from the kumapie-tv "dictionary" release, in state\dicts) -> Wikimedia Commons.
+COMMONS_MP3 = "https://upload.wikimedia.org/wikipedia/commons/transcoded/"
+RECORDINGS = STATE / "recordings"
+
+
+def recording(word, lang):
+    """A person's recording of exactly this word as mp3 (fetched once, kept), or None."""
+    index = cfg.state / "dicts" / f"{lang}-recordings.sqlite"
+    if not index.is_file():
+        return None
+    out = RECORDINGS / (hashlib.sha1(f"{lang}|{word.lower()}".encode()).hexdigest()[:16] + ".mp3")
+    if out.exists():
+        return out
+    with sqlite3.connect(f"file:{index}?mode=ro", uri=True) as db:
+        row = db.execute("select file from sounds where word = ?", (word.lower(),)).fetchone()
+    if not row:
+        return None
+    url = COMMONS_MP3 + row[0] + "/" + row[0].rsplit("/", 1)[-1] + ".mp3"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "kumapie-server (https://github.com/Pedrubik2000/kumapie-server)"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = r.read()
+    except OSError as e:
+        log(f"recording of {word!r} ({lang}) failed: {e}")
+        return None
+    RECORDINGS.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    return out
+
+
+def word_audio(word, lang):
+    """A mined card's word audio: a person's recording, else the generated voice (Japanese has no index: the voice)."""
+    return recording(word, lang) or tts(word, lang)
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
@@ -302,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
                 ep, video = tv.episode(eid, status_of), tv.video(eid)
                 if not ep or not video:
                     return self.send_error(404)
-                done = anki.mine(ep, video, tv.ffmpeg, tts, body)
+                done = anki.mine(ep, video, tv.ffmpeg, word_audio, body)
                 log(f"anki: mined {body.get('word') or 'a sentence'} from {ep['show']} {ep['title']} into {done['deck']}")
                 return self.send_json(done)
             simple = {"undo": anki.undo, "sync": anki.sync}
