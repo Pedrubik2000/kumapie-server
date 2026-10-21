@@ -66,19 +66,15 @@ def key(lang: str, field: str) -> str:
     return ja_spelling(field) if lang == "ja" else form(field)
 
 
-def state(own: list[dict], due: set[int], review: set[int]) -> str:
-    """d due for review today, k studied, b mined and never reviewed, n learning (CardIndex.state)."""
-    if any(c["cardId"] in review for c in own):
+def state(own: list[dict], due: set[int]) -> str:
+    """d due today (review or learning), b mined and never reviewed, k studied and not due (CardIndex.state)."""
+    if any(c["cardId"] in due for c in own):
         return "d"
-    if any(c["type"] == 2 for c in own):
-        return "k"
-    if all(c["type"] == 0 for c in own):
-        return "b"
-    return "n"
+    return "b" if all(c["type"] == 0 for c in own) else "k"
 
 
-def index(lang: str) -> tuple[dict[str, list[dict]], set[int], set[int]]:
-    """Form -> its cards in the Mined deck, and today's due cards (all, reviews)."""
+def index(lang: str) -> tuple[dict[str, list[dict]], set[int]]:
+    """Form -> its cards in the Mined deck, and today's due cards."""
     deck = f'"deck:{DECKS[lang]}"'
     cards = ac("cardsInfo", cards=ac("findCards", query=deck))
     by_form: dict[str, list[dict]] = {}
@@ -86,15 +82,13 @@ def index(lang: str) -> tuple[dict[str, list[dict]], set[int], set[int]]:
         k = key(lang, (c["fields"].get("Word") or {}).get("value", ""))
         if k:
             by_form.setdefault(k, []).append(c)
-    due = set(ac("findCards", query=f"{deck} is:due"))
-    review = set(ac("findCards", query=f"{deck} is:due is:review"))
-    return by_form, due, review
+    return by_form, set(ac("findCards", query=f"{deck} is:due"))
 
 
 def cards(lang: str) -> dict:
     """{"forms": {form: state}, "notes": {form: first note id}} for the page's colours and "Open in Anki"."""
-    by_form, due, review = index(lang)
-    return {"forms": {k: state(cs, due, review) for k, cs in by_form.items()},
+    by_form, due = index(lang)
+    return {"forms": {k: state(cs, due) for k, cs in by_form.items()},
             "notes": {k: cs[0]["note"] for k, cs in by_form.items()}}
 
 
@@ -102,7 +96,7 @@ def rate(lang: str, word: str, ease: int) -> dict:
     """Answers the word's due cards (none due: its first card, an early review) with [ease] 1-4."""
     if ease not in (1, 2, 3, 4):
         raise ValueError("ease 1-4")
-    by_form, due, _ = index(lang)
+    by_form, due = index(lang)
     own = by_form.get(key(lang, word), [])
     answer = [c for c in own if c["cardId"] in due] or own[:1]
     if not answer:
@@ -280,10 +274,11 @@ if __name__ == "__main__":
     assert ja_spelling("拾[ひろ]\\う:0") == "拾う"
     assert ja_spelling("みんな:3-") == "みんな"
     c = lambda i, t: {"cardId": i, "type": t}
-    assert state([c(1, 2)], {1}, {1}) == "d"
-    assert state([c(1, 2)], set(), set()) == "k"
-    assert state([c(1, 0)], {1}, set()) == "b"
-    assert state([c(1, 1)], {1}, set()) == "n"
+    assert state([c(1, 2)], {1}) == "d"
+    assert state([c(1, 2)], set()) == "k"
+    assert state([c(1, 0)], set()) == "b"
+    assert state([c(1, 1)], {1}) == "d"  # learning, due
+    assert state([c(1, 1)], set()) == "k"  # learning, not due: white
     cue = lambda s: {"seg": [[s, None]], "start": 0, "end": 1}
     cues = [cue("Aber warum…"), cue("fühle ich mich"), cue("ausgelaugt?"), cue("Keine Ahnung.")]
     assert sentence(cues, 1) == ("Aber warum… fühle ich mich ausgelaugt?", cues[:3])
