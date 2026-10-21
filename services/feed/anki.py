@@ -191,7 +191,7 @@ def store(path: Path, name: str) -> str:
 
 def mine(ep: dict, video: Path, ffmpeg: str, word_audio, body: dict) -> dict:
     """A card from the page: [body] = {scene, line, word?, surface?, gloss?, english?}. [ep] is tv.episode()'s JSON;
-    [word_audio](word, lang) -> mp3 Path or None. Answers {"note", "deck"}."""
+    [word_audio](word, lang, reading=None) -> audio Path (mp3 or opus) or None. Answers {"note", "deck"}."""
     lang = ep["lang"]
     if lang not in DECKS:
         raise ValueError("no Mined deck for " + lang)
@@ -254,9 +254,9 @@ def mine(ep: dict, video: Path, ffmpeg: str, word_audio, body: dict) -> dict:
                 fields["Word"] = esc(written) + (f"[→ {esc(lemma)}]" if lemma and lemma.lower() != written.lower() else "")
                 fields[DEF_BI] = definition(written, lemma, gloss)
                 spoken = surface
-            audio = word_audio(word, lang)
+            audio = word_audio(expression, lang, info.get("r")) if japanese else word_audio(word, lang)
             if audio:
-                fields["Word Audio"] = f"[audio:{store(audio, 'kumapie-' + slug(spoken) + '.mp3')}]"
+                fields["Word Audio"] = f"[audio:{store(audio, 'kumapie-' + slug(spoken) + audio.suffix)}]"
 
     at = text.find(surface) if japanese and surface else -1
     fields["Sentence"] = esc(text) if at < 0 else (esc(text[:at]) + "<b>" + esc(surface) + (f"[{esc(reading)}]" if reading else "")

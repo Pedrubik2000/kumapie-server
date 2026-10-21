@@ -252,8 +252,12 @@ COMMONS_MP3 = "https://upload.wikimedia.org/wikipedia/commons/transcoded/"
 RECORDINGS = STATE / "recordings"
 
 
-def recording(word, lang):
-    """A person's recording of exactly this word as mp3 (fetched once, kept), or None."""
+def recording(word, lang, reading=None):
+    """A person's recording of exactly this word (fetched once, kept), or None: Wiktionary's for German and English
+    (mp3 from Commons); for Japanese the phone's ja-audio.sqlite (NHK16, Shinmeikai 8, JapanesePod101, Forvo, in that
+    order, [reading] when the word has kanji) as the opus it holds."""
+    if lang == "ja":
+        return ja_recording(word, reading)
     index = cfg.state / "dicts" / f"{lang}-recordings.sqlite"
     if not index.is_file():
         return None
@@ -277,9 +281,28 @@ def recording(word, lang):
     return out
 
 
-def word_audio(word, lang):
-    """A mined card's word audio: a person's recording, else the generated voice (Japanese has no index: the voice)."""
-    return recording(word, lang) or tts(word, lang)
+def ja_recording(word, reading=None):
+    index = cfg.state / "dicts" / "ja-audio.sqlite"
+    if not index.is_file():
+        return None
+    out = RECORDINGS / (hashlib.sha1(f"ja|{word}|{reading or ''}".encode()).hexdigest()[:16] + ".opus")
+    if out.exists():
+        return out
+    order = "CASE w.source WHEN 'nhk16' THEN 0 WHEN 'shinmeikai8' THEN 1 WHEN 'jpod' THEN 2 ELSE 3 END"
+    where, args = ("w.term = ? AND (w.reading = ? OR w.reading = '')", (word, reading)) if reading else ("w.term = ?", (word,))
+    with sqlite3.connect(f"file:{index}?mode=ro", uri=True) as db:
+        row = db.execute(f"SELECT a.data FROM words w JOIN audio a ON a.source = w.source AND a.file = w.file "
+                         f"WHERE {where} ORDER BY {order} LIMIT 1", args).fetchone()
+    if not row:
+        return None
+    RECORDINGS.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(row[0])
+    return out
+
+
+def word_audio(word, lang, reading=None):
+    """A mined card's word audio: a person's recording, else the generated voice."""
+    return recording(word, lang, reading) or tts(word, lang)
 
 
 class Handler(BaseHTTPRequestHandler):
