@@ -31,6 +31,8 @@ import sys
 import threading
 import time
 import unicodedata
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -401,12 +403,26 @@ def _file(job: dict, tmp: Path) -> None:
 
 # ---------------------------------------------------------------- AniWorld
 
+def _seasons(url: str) -> list[str]:
+    """A show's season links (staffel-1, staffel-2...) from its page: the CLI given the show's own link waits forever."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        page = r.read().decode("utf-8", "replace")
+    path = re.escape(urllib.parse.urlsplit(url).path.rstrip("/"))
+    found = {int(n) for n in re.findall(rf'href="{path}/staffel-(\d+)"', page)}
+    return [f"{url.rstrip('/')}/staffel-{n}" for n in sorted(found)]
+
+
 def _aniworld(job: dict, out: Path) -> None:
     job["step"] = "downloading"
+    links = [job["url"]] if re.search(r"/(staffel-\d+|filme)", job["url"]) else _seasons(job["url"])
+    if not links:
+        raise RuntimeError("no seasons on the show's page")
     # The CLI skips what it has: the second run retries only failed episodes (a host's hiccup). Its exit code isn't
     # checked: a failed single episode exits 1, a season with failed episodes exits 0; what's on disk is what counts.
-    for _ in range(2):
-        _run([VENV / "aniworld.exe", "-a", "Download", "-l", CONF["dub"][job["lang"]], "-o", out, job["url"]], check=False)
+    for link in links:
+        for _ in range(2):
+            _run([VENV / "aniworld.exe", "-a", "Download", "-l", CONF["dub"][job["lang"]], "-o", out, link], check=False)
     videos = sorted(f for f in out.rglob("*") if f.suffix.lower() in (".mkv", ".mp4") and EPISODE.search(f.name)
                     and ".temp" not in f.name)  # a failed download leaves <name>.temp_full.mkv
     if not videos:
