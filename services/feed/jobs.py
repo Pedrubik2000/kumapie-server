@@ -414,19 +414,30 @@ def _seasons(url: str) -> list[str]:
 
 
 def _aniworld(job: dict, out: Path) -> None:
-    job["step"] = "downloading"
-    links = [job["url"]] if re.search(r"/(staffel-\d+|filme)", job["url"]) else _seasons(job["url"])
+    show_page = not re.search(r"/(staffel-\d+(/episode-\d+)?|filme(/film-\d+)?)/?$", job["url"])
+    links = _seasons(job["url"]) if show_page else [job["url"]]
     if not links:
         raise RuntimeError("no seasons on the show's page")
-    # The CLI skips what it has: the second run retries only failed episodes (a host's hiccup). Its exit code isn't
-    # checked: a failed single episode exits 1, a season with failed episodes exits 0; what's on disk is what counts.
-    for link in links:
+    total = 0
+    # One season at a time, made and listed before the next downloads: a long show isn't all on disk at once, and a
+    # later season failing keeps the earlier ones.
+    for n, link in enumerate(links, 1):
+        job["step"] = f"downloading season {n} of {len(links)}" if len(links) > 1 else "downloading"
+        # The CLI skips what it has: the second run retries only failed episodes (a host's hiccup). Its exit code isn't
+        # checked: a failed single episode exits 1, a season with failed episodes exits 0; what's on disk is what counts.
         for _ in range(2):
             _run([VENV / "aniworld.exe", "-a", "Download", "-l", CONF["dub"][job["lang"]], "-o", out, link], check=False)
+        made = _made_aniworld(job, out)
+        _episodes(job, made)
+        total += len(made)
+    if not total:
+        raise RuntimeError(f"no {CONF['dub'][job['lang']]} for this link (or the hosts failed twice)")
+
+
+def _made_aniworld(job: dict, out: Path) -> list[Path]:
+    """The downloaded episodes in [out] -> library MP4 + transcript; the downloads are deleted once made."""
     videos = sorted(f for f in out.rglob("*") if f.suffix.lower() in (".mkv", ".mp4") and EPISODE.search(f.name)
                     and ".temp" not in f.name)  # a failed download leaves <name>.temp_full.mkv
-    if not videos:
-        raise RuntimeError(f"no {CONF['dub'][job['lang']]} for this link (or the hosts failed twice)")
     made = []
     for i, src in enumerate(videos, 1):
         season, number = (int(n) for n in EPISODE.search(src.name).groups())
@@ -446,7 +457,7 @@ def _aniworld(job: dict, out: Path) -> None:
         made.append(folder / f"{stem}.mp4")
         job["episodes"].append(stem)
         src.unlink()
-    _episodes(job, made)
+    return made
 
 
 # ----------------------------------------------------------------
@@ -490,6 +501,9 @@ if __name__ == "__main__":
     assert TIKTOK_ACCOUNT.match("https://www.tiktok.com/@tagesschau") and TIKTOK_ACCOUNT.match("https://www.tiktok.com/@ard.de/?lang=de")
     assert not TIKTOK_ACCOUNT.match("https://www.tiktok.com/@tagesschau/video/7350000000000000000")
     assert not TIKTOK_ACCOUNT.match("https://www.tiktok.com/@a; rm -rf /")
+    show = lambda u: not re.search(r"/(staffel-\d+(/episode-\d+)?|filme(/film-\d+)?)/?$", u)  # noqa: E731 - as in _aniworld
+    assert show("https://aniworld.to/anime/stream/filmeerzaehler") and show("https://aniworld.to/anime/stream/x/")
+    assert not show("https://aniworld.to/anime/stream/x/staffel-2/episode-1") and not show("https://aniworld.to/anime/stream/x/staffel-2") and not show("https://aniworld.to/anime/stream/x/filme/film-1")
     assert CHANNEL.match("https://www.youtube.com/@marichannel/shorts").group(0) == "https://www.youtube.com/@marichannel"
     assert _ascii("Café Trip! Vlog #3") == "cafe_trip_vlog_3" and _ascii("コアラの指紋") == ""
     assert _safe("../a:b.mkv") == "_a_b.mkv" and not UPLOAD_ID.match("../x")
