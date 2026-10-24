@@ -30,6 +30,7 @@ import os
 import random
 import re
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -48,6 +49,7 @@ import known  # noqa: E402
 import jobs  # noqa: E402
 import stremio  # noqa: E402
 import anki  # noqa: E402
+import voice  # noqa: E402
 
 F = cfg.raw["feed"]
 PORT = cfg.services["feed_port"]
@@ -221,11 +223,21 @@ JA_DICTS = "yomitan-ja"
 
 
 def tts(word, lang="de"):
-    """Word audio from edge-tts in the episode's language, made once per word (German files keep their old names)."""
-    key = word if lang == "de" else f"{lang}|{word}"
-    out = TTS / (hashlib.sha1(key.encode()).hexdigest()[:16] + ".mp3")
+    """Word audio from the language's voice (voice.py: ずんだもん, Thorsten, Michael), else edge-tts; made once per word."""
+    out = TTS / (hashlib.sha1(f"v2|{lang}|{word}".encode()).hexdigest()[:16] + ".mp3")
     if out.exists():
         return out
+    TTS.mkdir(parents=True, exist_ok=True)
+    wav = out.with_suffix(".wav")
+    try:
+        if voice.say(word, lang, wav):
+            ffmpeg = os.environ.get("FFMPEG") or shutil.which("ffmpeg") or "ffmpeg"
+            subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(wav), "-b:a", "96k", str(out)], check=True, timeout=60)
+            return out
+    except Exception as e:  # noqa: BLE001 - the online voice below still answers
+        log(f"voice failed for {word!r} ({lang}): {e}")
+    finally:
+        wav.unlink(missing_ok=True)
     import edge_tts
 
     async def run(tmp):
