@@ -69,9 +69,62 @@ ENV = {**os.environ, "PYTHONUTF8": "1", "HF_HOME": str(cfg.root / CONF["hf_home"
        "PATH": os.path.dirname(FFMPEG) + os.pathsep + os.environ.get("PATH", ""),  # aniworld and parakeet.py run ffmpeg
        "ALASS_FFMPEG_PATH": FFMPEG, "ALASS_FFPROBE_PATH": FFPROBE}  # alass reads a video reference with them
 SECRETS = ("key", "rd", "jimaku")
+SAVED = cfg.state / "feed" / "jobs.json"  # the unfinished jobs (tokens too): queued again when the server starts
 
 jobs: list[dict] = []
 _queue: queue.Queue = queue.Queue()
+_saving = threading.Lock()
+
+
+def _save() -> None:
+    """The unfinished jobs to disk, so a restart (new code, a crash) goes on with them."""
+    with _saving:
+        part = SAVED.with_name(SAVED.name + ".part")
+        part.write_text(json.dumps([j for j in jobs if j["state"] in ("queued", "running")]), encoding="utf-8")
+        part.replace(SAVED)
+
+
+def _again(saved: list[dict]) -> list[dict]:
+    """Saved jobs (newest first) -> oldest first, queued again. Each kind skips what it already made (AniWorld goes on
+    in its kept work folder). One cut off 3 times fails instead: it may be what brings the server down."""
+    for job in saved:
+        job["restarts"] = job.get("restarts", 0) + 1
+        if job["restarts"] > 3:
+            job.update(state="failed", error="stopped by 3 restarts of the server")
+        else:
+            job.update(state="queued", step="queued again after a restart")
+    return saved[::-1]
+
+
+def _kill_on_exit():
+    """Windows: a job object that ends the processes put in it when this server ends, however it ends (new code:
+    os._exit(3)). Without it aniworld.exe, ffmpeg and Parakeet ran on as LocalSystem after a restart, and only an
+    Administrator could end them (two aniworld.exe on 2026-10-24). Answers what puts a process in it."""
+    if os.name != "nt":
+        return lambda p: None
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):  # JOBOBJECT_BASIC_LIMIT_INFORMATION
+        _fields_ = [("user_time", ctypes.c_int64 * 2), ("flags", wintypes.DWORD), ("working_set", ctypes.c_size_t * 2),
+                    ("processes", wintypes.DWORD), ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD * 2)]
+
+    class Extended(ctypes.Structure):  # JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        _fields_ = [("basic", Basic), ("io", ctypes.c_ulonglong * 6), ("memory", ctypes.c_size_t * 4)]
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    info = Extended()
+    info.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: the handle closes with this process
+    job = k32.CreateJobObjectW(None, None)
+    if not job or not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):  # 9 = extended
+        return lambda p: None
+    return lambda p: k32.AssignProcessToJobObject(job, int(p._handle))
+
+
+_contain = _kill_on_exit()
 
 
 def submit(body: dict) -> dict:
@@ -110,6 +163,7 @@ def submit(body: dict) -> dict:
            "state": "queued", "step": "", "error": "", "episodes": []}
     jobs.insert(0, job)
     _queue.put(job)
+    _save()
     return listing()[0]
 
 
@@ -140,12 +194,19 @@ def _safe(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .")[:200]
 
 
+def _start(cmd, **kw) -> subprocess.Popen:
+    p = subprocess.Popen([str(c) for c in cmd], env=ENV, stdin=subprocess.DEVNULL, **kw)
+    _contain(p)  # ends with the server; what it starts later (aniworld.exe's ffmpeg) is in the job too
+    return p
+
+
 def _run(cmd, check=True, **kw) -> None:
     with open(LOG, "a", encoding="utf-8") as log:
         log.write(f"\n{time.strftime('%Y-%m-%d %H:%M:%S')} $ {' '.join(map(str, cmd))}\n")
         log.flush()
-        subprocess.run([str(c) for c in cmd], env=ENV, stdout=log, stderr=subprocess.STDOUT, check=check,
-                       stdin=subprocess.DEVNULL, **kw)
+        code = _start(cmd, stdout=log, stderr=subprocess.STDOUT, **kw).wait()
+    if check and code:
+        raise subprocess.CalledProcessError(code, cmd)
 
 
 def _out(cmd, both=False) -> str:
@@ -153,9 +214,11 @@ def _out(cmd, both=False) -> str:
     with open(LOG, "a", encoding="utf-8") as log:
         log.write(f"\n{time.strftime('%Y-%m-%d %H:%M:%S')} $ {' '.join(map(str, cmd))}\n")
         log.flush()
-        out = subprocess.run([str(c) for c in cmd], env=ENV, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT if both else log, check=True, stdin=subprocess.DEVNULL,
-                             text=True, encoding="utf-8", errors="replace").stdout
+        p = _start(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT if both else log, text=True,
+                   encoding="utf-8", errors="replace")
+        out = p.communicate()[0]
+        if p.returncode:
+            raise subprocess.CalledProcessError(p.returncode, cmd, out)
         if both:
             log.write(out)
         return out
@@ -481,12 +544,22 @@ def _worker() -> None:
             job["state"], job["step"] = "done", ""
         except Exception as e:  # noqa: BLE001 - reported to the device
             job["state"], job["error"] = "failed", str(e)[:300]
+        _save()
 
 
 def listing() -> list[dict]:
     return [{k: v for k, v in j.items() if k not in SECRETS} for j in jobs]
 
 
+if __name__ != "__main__":  # the server: jobs a restart cut off go on (the self-check below must not run them)
+    try:
+        for _job in _again(json.loads(SAVED.read_text(encoding="utf-8"))):
+            jobs.insert(0, _job)
+            if _job["state"] == "queued":
+                _queue.put(_job)
+        _save()  # with the restart counts
+    except (OSError, ValueError):
+        pass
 threading.Thread(target=_worker, daemon=True).start()
 
 
@@ -510,4 +583,10 @@ if __name__ == "__main__":
     log = ("shifted block of 300 subtitles with length 0:20:00.000 by -0:00:01.000\n"
            "shifted block of 12 subtitles with length 0:01:30.000 by 0:00:45.000\n")
     assert _strays(log) and not _strays(log.splitlines()[0])
+    again = _again([{"id": "new", "state": "queued"}, {"id": "old", "state": "running", "restarts": 3}])
+    assert [j["id"] for j in again] == ["old", "new"] and [j["state"] for j in again] == ["failed", "queued"]
+    p = _start([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert p.poll() is None
+    assert os.name != "nt" or _contain(p)  # the kill-on-exit job was made and takes the child (again: still true)
+    p.kill()
     print("ok")
