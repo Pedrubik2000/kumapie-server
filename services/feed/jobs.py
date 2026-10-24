@@ -50,6 +50,7 @@ ANIWORLD = re.compile(r"^https://(aniworld\.to/anime|s\.to/serie|serienstream\.t
                       r"(/staffel-\d+(/episode-\d+)?|/filme(/film-\d+)?)?/?$")
 YOUTUBE = re.compile(r"^https://((www|m)\.)?(youtube\.com|youtu\.be)/[\w\-/?=&.@%]+$")
 TIKTOK = re.compile(r"^https://((www|vm|vt|m)\.)?tiktok\.com/[\w\-/?=&.@%]+$")
+TIKTOK_ACCOUNT = re.compile(r"^https://((www|m)\.)?tiktok\.com/@[\w.\-]+/?(\?[\w=&.%-]*)?$")  # its newest [count]
 CHANNEL = re.compile(r"^https://((www|m)\.)?youtube\.com/(@[^/?]+|channel/[^/?]+|c/[^/?]+|user/[^/?]+)")
 LINK = re.compile(r"^(magnet:\?\S+|https://\S+)$")  # Real-Debrid: a magnet or a hoster / Real-Debrid link
 UPLOAD_ID = re.compile(r"^[0-9a-f]{8,40}$")
@@ -212,6 +213,11 @@ def _yt() -> list:
 def _videos(job: dict) -> list[str]:
     """The job's video links: the link itself, or the newest [count] of its channel's shorts / videos, or the playlist."""
     url, kind = job["url"], job["kind"]
+    if TIKTOK_ACCOUNT.match(url):  # followed on a phone, which can't list TikTok: the PC lists it, newest first
+        urls = _out(_yt() + ["--flat-playlist", "-I", f"1:{job['count']}", "--print", "url", url]).split()
+        if not urls:
+            raise RuntimeError(f"no videos at {url}")
+        return urls
     if kind == "video":
         return [url]
     if kind != "playlist":
@@ -465,6 +471,9 @@ if __name__ == "__main__":
     assert YOUTUBE.match("https://www.youtube.com/shorts/Cn9o7nr_HFo") and YOUTUBE.match("https://youtu.be/abc?si=x")
     assert not YOUTUBE.match("https://www.youtube.com/watch?v=x; rm -rf /")
     assert TIKTOK.match("https://www.tiktok.com/@tagesschau/video/7350000000000000000")
+    assert TIKTOK_ACCOUNT.match("https://www.tiktok.com/@tagesschau") and TIKTOK_ACCOUNT.match("https://www.tiktok.com/@ard.de/?lang=de")
+    assert not TIKTOK_ACCOUNT.match("https://www.tiktok.com/@tagesschau/video/7350000000000000000")
+    assert not TIKTOK_ACCOUNT.match("https://www.tiktok.com/@a; rm -rf /")
     assert CHANNEL.match("https://www.youtube.com/@marichannel/shorts").group(0) == "https://www.youtube.com/@marichannel"
     assert _ascii("Café Trip! Vlog #3") == "cafe_trip_vlog_3" and _ascii("コアラの指紋") == ""
     assert _safe("../a:b.mkv") == "_a_b.mkv" and not UPLOAD_ID.match("../x")
