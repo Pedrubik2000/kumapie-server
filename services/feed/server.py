@@ -10,6 +10,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   /clips/<id>.mp4         the clip's episode video, with HTTP Range (the page plays start..end of it)
   /api/tts?w=<word>       the word read by edge-tts (only words in the feed), cached in state\\feed\\tts\\
   POST /api/tv/known_words  {"person", "lang", "words"}: the words kumapie shows as known (known.py)
+  GET  /api/tv/known_words?person=&lang=   those words (kumadeck on the Steam Deck)
   POST /api/tv/device_seen  {"person", "seen", "unwatched"}: what the person's phones count as seen (tv.py)
   POST /api/tv/device_watch {"person", "watch": {lang: {day: seconds}}}: the phones' own time per language (tv.py)
   GET  /api/models/<file>   the Japanese splitter's data files (MODEL_FILES, from state\\dicts)
@@ -311,6 +312,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(url.path)
         if path.startswith("/api/anki/"):
             return self.anki(path, urllib.parse.parse_qs(url.query))
+        if path == "/api/tv/known_words":
+            q = urllib.parse.parse_qs(url.query)
+            try:
+                return self.send_json(known.listing(q.get("person", [None])[0], q.get("lang", [None])[0]))
+            except ValueError as e:
+                return self.send_error(400, str(e))
         if path.startswith("/api/tv"):
             return self.tv_get(path, urllib.parse.parse_qs(url.query).get("person", [None])[0])
         if path.startswith("/api/sync/"):

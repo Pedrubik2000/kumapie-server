@@ -46,6 +46,14 @@ def save(body: dict) -> dict:
     return {"ok": True, "key": key, "n": len(out)}
 
 
+def listing(person: str | None, lang: str | None) -> list[str]:
+    """The person's known words in a language as their phone sent them (kumadeck on the Steam Deck reads them)."""
+    key = PEOPLE.get(person or OWNER, {}).get(lang) if isinstance(lang, str) else None
+    if not key:
+        raise ValueError("unknown person or language")
+    return sorted(words(key) or ())
+
+
 def words(key: str) -> frozenset[str] | None:
     """The person's known words (reread when the file changes), or None when their phone never sent any."""
     f = path(key)
