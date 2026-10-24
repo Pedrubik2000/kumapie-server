@@ -132,8 +132,13 @@ def _link(type_: str, sid: str, token: str, q: str, torrent: str) -> tuple[str, 
             urllib.request.Request(best["url"], headers={"User-Agent": "kumapie"}), timeout=60)
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 307) and e.headers.get("Location"):
-            if "torrentio.strem.fun/videos/" in e.headers["Location"]:  # its "downloading" placeholder video
-                raise ValueError("Real-Debrid is still downloading this one: pick it again in a few minutes") from None
+            if "torrentio.strem.fun/videos/" in e.headers["Location"]:  # a placeholder video: downloading_v3, failed_access_v3...
+                what = e.headers["Location"].rsplit("/", 1)[-1].split(".")[0]
+                if what.startswith("downloading"):
+                    raise ValueError("Real-Debrid is still downloading this one: pick it again in a few minutes") from None
+                # failed_access: the account isn't premium any more (2026-10-24: 40 minutes of "still downloading")
+                raise ValueError(f"Real-Debrid refused it ({what})"
+                                 + (": is the Real-Debrid account still premium?" if "access" in what else "")) from None
             return e.headers["Location"], m[1].lower() if m else ""
         raise
     raise ValueError("Real-Debrid gave no file")
