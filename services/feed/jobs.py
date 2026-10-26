@@ -303,7 +303,11 @@ def _youtube(job: dict) -> None:
     for i, url in enumerate(urls, 1):
         try:
             info = json.loads(_out(_yt() + ["-J", "--no-playlist", url]))
-            short = job["kind"] == "shorts" or "/shorts/" in url or bool(TIKTOK.match(url))
+            # Japanese sound under German subtitles was made into "German" episodes (Yamanobori 0, 2026-10-26).
+            heard = {(f.get("language") or "").split("-")[0] for f in info.get("formats") or [] if f.get("acodec") not in (None, "none")}
+            if heard - {""} and lang not in heard:
+                raise RuntimeError(f"no {lang} sound (only {', '.join(sorted(heard - {''}))})")
+            short =job["kind"] == "shorts" or "/shorts/" in url or bool(TIKTOK.match(url))
             show = (_ascii(job["show"]) or _ascii(info.get("channel") or info.get("uploader") or "")
                     or _ascii(info.get("uploader_id") or "") or "youtube")
             folder = cfg.library(job["key"]) / ("reels" if short else "youtube") / show

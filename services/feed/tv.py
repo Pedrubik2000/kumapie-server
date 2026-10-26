@@ -290,6 +290,14 @@ class TV:
                         if (known.get(i) or {}).get("lemma"):
                             lemmas.setdefault(i, known[i]["lemma"])
                     episodes[ep["id"]] = ep
+            # One folder name in two languages' libraries (a channel and its German dub, both "yamanobori_0") was one
+            # show in the first one's language: each language gets its own, "<folder>_<lang>".
+            langs: dict[str, set] = {}
+            for e in episodes.values():
+                langs.setdefault(e["show"], set()).add(LANG.get(e["person"]))
+            for e in episodes.values():
+                if len(langs[e["show"]]) > 1:
+                    e["show"] = f"{e['show']}_{LANG.get(e['person'])}"
             self.episodes, self.words, self.lemmas = episodes, words, lemmas
             self.parsed = parsed
             self.scanned = (mtime, time.time())
