@@ -348,15 +348,18 @@ def _translation(key: str) -> str:
 
 def _remux(src: Path, dst: Path, lang: str) -> None:
     """Any video -> MP4 for the phones: the episode language's audio as AAC; the video copied, or a heavy one (over
-    15 Mbps, a BluRay remux) re-encoded to HEVC 5 Mbps, as the phone does."""
-    probe = json.loads(_out([FFPROBE, "-v", "error", "-show_entries", "stream=index,codec_type:stream_tags=language:format=bit_rate",
+    15 Mbps, a BluRay remux) re-encoded to HEVC 5 Mbps, as the phone does. Not H.264/HEVC (AV1: the bedroom TV's
+    MediaTek decoder shows one frame and stalls) -> H.264."""
+    probe = json.loads(_out([FFPROBE, "-v", "error", "-show_entries", "stream=index,codec_type,codec_name:stream_tags=language:format=bit_rate",
                              "-of", "json", src]))
     audio = [s for s in probe["streams"] if s["codec_type"] == "audio"]
     if not audio:
         raise RuntimeError(f"no sound in {src.name}")
     track = next((s for s in audio if (s.get("tags") or {}).get("language", "").lower() in AUDIO.get(lang, (lang,))), audio[0])
     heavy = int(probe.get("format", {}).get("bit_rate") or 0) > 15_000_000
-    video = ["-c:v", "libx265", "-preset", "fast", "-b:v", "5M", "-tag:v", "hvc1"] if heavy else ["-c:v", "copy"]
+    codec = next((s.get("codec_name") for s in probe["streams"] if s["codec_type"] == "video"), "")
+    video = ["-c:v", "libx265", "-preset", "fast", "-b:v", "5M", "-tag:v", "hvc1"] if heavy else \
+        ["-c:v", "copy"] if codec in ("h264", "hevc") else ["-c:v", "libx264", "-preset", "faster", "-crf", "23", "-pix_fmt", "yuv420p"]
     part = dst.with_name(dst.stem + ".part.mp4")
     _run([FFMPEG, "-v", "error", "-y", "-i", src, "-map", "0:v:0", "-map", f"0:{track['index']}", *video,
           "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-movflags", "+faststart", part])
