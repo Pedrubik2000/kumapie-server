@@ -290,6 +290,11 @@ class TV:
                         if (known.get(i) or {}).get("lemma"):
                             lemmas.setdefault(i, known[i]["lemma"])
                     episodes[ep["id"]] = ep
+            # A phone-made episode synced into the library is also in feed.db under its path's id: Nicos Weg was listed
+            # twice, the second copy with no progress (2026-10-26). The library's episode (its own id, its progress) wins.
+            taken = {e["path"] for e in episodes.values() if "path" in e}
+            for k in [k for k, e in episodes.items() if "path" not in e and cfg.library(e["person"]) / e["source"] in taken]:
+                del episodes[k]
             # One folder name in two languages' libraries (a channel and its German dub, both "yamanobori_0") was one
             # show in the first one's language: each language gets its own, "<folder>_<lang>".
             langs: dict[str, set] = {}
