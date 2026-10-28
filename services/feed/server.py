@@ -17,6 +17,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   GET  /api/models/ja-dicts[/<zip>]  Japanese Yomitan zips the TVs import for mining (list, file; state\\dicts\\yomitan-ja)
   POST /api/tv/meta         {"show", "kind", "source", "id"}: "Fix match" for a PC show (tv.py, meta.py)
   /api/tv/...             the kumapie-tv app's API (Android TV, whole episodes scene by scene): see tv.py
+  POST /api/nicosweg      {"prog", "t"}: Nicos Weg progress merged across Pedro's devices (nicosweg_sync)
   /api/sync/...           episodes made on phones/tablets, kept here for the person's other devices: see sync.py
 
 Binds 127.0.0.1: Tailscale Serve publishes it on HTTPS 8445 (tailnet only, never Funnel).
@@ -318,6 +319,32 @@ def word_audio(word, lang, reading=None):
     return recording(word, lang, reading) or tts(word, lang)
 
 
+NICOSWEG = cfg.state / "nicosweg" / "progress.json"
+nicosweg_lock = threading.Lock()
+
+
+def nicosweg_sync(body):
+    """Nicos Weg progress shared by Pedro's phone and tablet (C:\\dojo\\code\\tools\\nicosweg): body and reply are
+    {"prog": {exercise id: [right, total, wrong?]}, "t": {exercise id: ms}}; per exercise the newer change wins,
+    then the bigger total (progress from before the sync has no time)."""
+    prog, t = body["prog"], body["t"]
+    if not isinstance(prog, dict) or not isinstance(t, dict) or not all(isinstance(v, list) and len(v) >= 2 for v in prog.values()):
+        raise ValueError("bad progress")
+    with nicosweg_lock:
+        try:
+            have = json.loads(NICOSWEG.read_text())
+        except (OSError, ValueError):
+            have = {"prog": {}, "t": {}}
+        for k, v in prog.items():
+            if k not in have["prog"] or (t.get(k, 0), v[1]) > (have["t"].get(k, 0), have["prog"][k][1]):
+                have["prog"][k], have["t"][k] = v, t.get(k, 0)
+        NICOSWEG.parent.mkdir(parents=True, exist_ok=True)
+        tmp = NICOSWEG.with_suffix(".tmp")
+        tmp.write_text(json.dumps(have))
+        tmp.replace(NICOSWEG)
+    return have
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
@@ -531,6 +558,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_error(400, str(e))
             log(f"jobs: {job['person']} queued {job['source']} {job['url']} ({job['lang']})")
             return self.send_json(job)
+        if path == "/api/nicosweg":  # the app's page is a file:// page: CORS, and text/plain so there's no preflight
+            try:
+                return self.send_json(nicosweg_sync(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))), cors=True)
+            except (ValueError, TypeError, KeyError, AttributeError) as e:
+                return self.send_error(400, str(e))
         if path == "/api/tv/prepare":
             try:
                 return self.send_json(stremio.prepare(tv, json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")))
@@ -568,9 +600,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(400)
         self.send_json(pick(n, exclude))
 
-    def send_json(self, obj):
+    def send_json(self, obj, cors=False):
         data = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(200)
+        if cors:
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
