@@ -26,6 +26,7 @@ import os
 import queue
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import threading
@@ -395,7 +396,24 @@ def _jimaku(job: dict, video: Path, show: str, season, number, name: str, tmp: P
     log = _out([ALASS, ref, raw, fitted, "--split-penalty", "11"], both=True)
     if _strays(log):
         _out([ALASS, ref, raw, fitted, "--no-split"], both=True)
-    return json.loads(jimaku.cues(str(fitted), "ja")), found.get("anilist")
+    cues = json.loads(jimaku.cues(str(fitted), "ja"))
+    return (_snap(cues, json.loads(jimaku.cues(str(english), "en"))) if english else cues), found.get("anilist")
+
+
+def _snap(cues: list, english: list) -> list:
+    """Japanese cues moved onto the video's own English ones: each by the median gap from the Japanese starts within
+    60 s to their nearest English start. alass left Apothecary Diaries 01 and 22 ~1 s late and 14-24 0.2-0.5 s early
+    (Jimaku's file was timed apart from this release); the English track was right to the frame."""
+    starts = [c[0] for c in english]
+    gaps = [(s, g) for s, *_ in cues if abs(g := min((t - s for t in starts), key=abs, default=9)) < 2]
+    if len(gaps) < 10:
+        return cues  # too few lines in common to tell
+    out = []
+    for s, e, text in cues:
+        near = [g for t, g in gaps if abs(t - s) <= 60]
+        d = statistics.median(near if len(near) >= 4 else [g for _, g in gaps])
+        out.append([round(s + d, 3), round(e + d, 3), text])
+    return out
 
 
 def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str = "") -> Path:
@@ -590,6 +608,10 @@ if __name__ == "__main__":
     log = ("shifted block of 300 subtitles with length 0:20:00.000 by -0:00:01.000\n"
            "shifted block of 12 subtitles with length 0:01:30.000 by 0:00:45.000\n")
     assert _strays(log) and not _strays(log.splitlines()[0])
+    ja = [[10.0 * i, 10.0 * i + 2, "x"] for i in range(30)]  # 0-140 s 1 s late, 150-290 s 0.5 s early
+    en = [[s - 1 if s < 150 else s + 0.5, 0, "y"] for s, *_ in ja]
+    snapped = _snap(ja, en)
+    assert snapped[3][:2] == [29.0, 31.0] and snapped[26][:2] == [260.5, 262.5] and _snap(ja[:5], en) == ja[:5]
     again = _again([{"id": "new", "state": "queued"}, {"id": "old", "state": "running", "restarts": 3}])
     assert [j["id"] for j in again] == ["old", "new"] and [j["state"] for j in again] == ["failed", "queued"]
     p = _start([sys.executable, "-c", "import time; time.sleep(30)"])
