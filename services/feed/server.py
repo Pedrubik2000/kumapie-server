@@ -10,6 +10,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   /clips/<id>.mp4         the clip's episode video, with HTTP Range (the page plays start..end of it)
   /api/tts?w=<word>       the word read by edge-tts (only words in the feed), cached in state\\feed\\tts\\
   POST /api/tv/known_words  {"person", "lang", "words"}: the words kumapie shows as known (known.py)
+  POST /api/tv/personal  {"person", "entries"}: a device's personal dictionary -> the merged one (personal.py)
   GET  /api/tv/known_words?person=&lang=   those words (kumadeck on the Steam Deck)
   POST /api/tv/device_seen  {"person", "seen", "unwatched"}: what the person's phones count as seen (tv.py)
   POST /api/tv/device_watch {"person", "watch": {lang: {day: seconds}}}: the phones' own time per language (tv.py)
@@ -47,6 +48,7 @@ from tv import TV  # noqa: E402
 import dicts  # noqa: E402
 import sync  # noqa: E402
 import known  # noqa: E402
+import personal  # noqa: E402
 import jobs  # noqa: E402
 import stremio  # noqa: E402
 import anki  # noqa: E402
@@ -569,10 +571,12 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as e:  # OSError: Torrentio or Real-Debrid unreachable; the TV shows the reason
                 return self.send_json({"state": "failed", "step": "", "error": str(e)[:200]})
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
-                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark"):
+                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark", "/api/tv/personal"):
             return self.send_error(404)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            if path == "/api/tv/personal":
+                return self.send_json(personal.sync(body))
             if path == "/api/tv/progress":
                 return self.send_json(tv.progress(body))
             if path == "/api/tv/lookup":
