@@ -225,15 +225,16 @@ MODEL_FILES = {"jiten-lexicon.tsv.gz", "jiten_user_core.dic"}
 JA_DICTS = "yomitan-ja"
 
 
-def tts(word, lang="de"):
+def tts(word, lang="de", reading=None):
     """Word audio from the language's voice (voice.py: ずんだもん, Thorsten, Michael), else edge-tts; made once per word."""
-    out = TTS / (hashlib.sha1(f"v2|{lang}|{word}".encode()).hexdigest()[:16] + ".mp3")
+    key = f"v2|{lang}|{word}" + (f"|{reading}" if reading else "")
+    out = TTS / (hashlib.sha1(key.encode()).hexdigest()[:16] + ".mp3")
     if out.exists():
         return out
     TTS.mkdir(parents=True, exist_ok=True)
     wav = out.with_suffix(".wav")
     try:
-        if voice.say(word, lang, wav):
+        if voice.say(word, lang, wav, reading):
             ffmpeg = os.environ.get("FFMPEG") or shutil.which("ffmpeg") or "ffmpeg"
             subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(wav), "-b:a", "96k", str(out)], check=True, timeout=60)
             return out
@@ -318,7 +319,7 @@ def ja_recording(word, reading=None):
 
 def word_audio(word, lang, reading=None):
     """A mined card's word audio: a person's recording, else the generated voice."""
-    return recording(word, lang, reading) or tts(word, lang)
+    return recording(word, lang, reading) or tts(word, lang, reading)
 
 
 NICOSWEG = cfg.state / "nicosweg" / "progress.json"
@@ -396,7 +397,8 @@ class Handler(BaseHTTPRequestHandler):
             word = query.get("w", [""])[0].strip().lower()
             with lock:
                 ok = word in feed["words"] or word in tv.words
-            f = tts(word, query.get("lang", ["de"])[0]) if ok else None
+            lang = query.get("lang", ["de"])[0]
+            f = tts(word, lang, dicts.senses("ja-en", word)[0] or None if lang == "ja" else None) if ok else None
             return self.send_file(f, "audio/mpeg", cache=True) if f else self.send_error(404)
         name = {"/": "index.html", "/pc": "pc.html"}.get(path) or path.lstrip("/")  # /pc: kumapie on the PC
         f = STATIC / name

@@ -24,6 +24,8 @@ VOICEVOX = cfg.root / "apps" / "voicevox" / "engine" / "windows-directml" / "run
 VOICEVOX_URL = "http://127.0.0.1:50021"
 ZUNDAMON = 3  # ずんだもん ノーマル
 MICHAEL = 6  # kokoro-en-v0_19: am_michael
+VOWELS = ("あかがさざただなはばぱまやゃらわぁ", "いきぎしじちにひびぴみりぃ", "うくぐすずつぬふぶぷむゆゅるぅ",
+          "えけげせぜてでねへべぺめれぇ", "おこごそぞとどのほぼぽもよょろをぉ")
 
 _engines: dict[str, object] = {}
 _lock = threading.Lock()
@@ -74,23 +76,34 @@ def _voicevox_up() -> bool:
     return False
 
 
-def _voicevox(text: str, out: Path) -> bool:
+def _spoken(kana: str) -> str:
+    """Kana as one spelling of their sound (とうきょう, トオキョオ, トーキョー); kumapie's JapaneseLookup.sameSound."""
+    out = ""
+    for c in "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in kana).replace("づ", "ず").replace("ぢ", "じ"):
+        vowel = next((row[0] for row in VOWELS if out and out[-1] in row), None)
+        out += vowel if c == "ー" and vowel else "お" if c == "う" and vowel == "お" else "え" if c == "い" and vowel == "え" else c
+    return out
+
+
+def _voicevox(text: str, out: Path, reading: str | None = None) -> bool:
     if not _voicevox_up():
         return False
-    q = urllib.parse.urlencode({"text": text, "speaker": ZUNDAMON})
     post = lambda path, data=None: urllib.request.urlopen(urllib.request.Request(  # noqa: E731
         f"{VOICEVOX_URL}{path}", data=data or b"", method="POST", headers={"Content-Type": "application/json"}), timeout=60).read()
-    query = json.loads(post(f"/audio_query?{q}"))
+    ask = lambda t: json.loads(post("/audio_query?" + urllib.parse.urlencode({"text": t, "speaker": ZUNDAMON})))  # noqa: E731
+    query = ask(text)  # as written: its dictionary gives the accent; the reading only for a word it misreads (風邪薬 カゼヤク)
+    if reading and _spoken("".join(m["text"] for p in query["accent_phrases"] for m in p["moras"])) != _spoken(reading):
+        query = ask(reading)
     query["postPhonemeLength"] = 0.2
     out.write_bytes(post(f"/synthesis?speaker={ZUNDAMON}", json.dumps(query).encode()))
     return out.stat().st_size > 44
 
 
-def say(text: str, lang: str, out: Path) -> bool:
+def say(text: str, lang: str, out: Path, reading: str | None = None) -> bool:
     """[text] said by the language's voice into the WAV [out]; False when there is no voice for it."""
     with _lock:
         if lang == "ja":
-            return _voicevox(text, out)
+            return _voicevox(text, out, reading)
         if lang not in ("de", "en"):
             return False
         if lang not in _engines:
@@ -106,6 +119,9 @@ if __name__ == "__main__":
     import sys
     import tempfile
 
+    for said, kana, same in (("トオキョオ", "とうきょう", True), ("エエガ", "えいが", True), ("キズク", "きづく", True), ("ケエキ", "ケーキ", True),
+                             ("オモウ", "おもう", True), ("カゼヤク", "かぜぐすり", False), ("ニジュッサイ", "はたち", False)):
+        assert (_spoken(said) == _spoken(kana)) == same, (said, kana)
     for lang, word in (("de", "Brötchen"), ("en", "squirrel"), ("ja", "箸")):
         f = Path(tempfile.mkdtemp()) / f"{lang}.wav"
         ok = say(word, lang, f)
