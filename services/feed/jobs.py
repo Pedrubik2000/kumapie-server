@@ -161,6 +161,9 @@ def submit(body: dict) -> dict:
            "rd": str(body.get("rd") or ""), "jimaku": str(body.get("jimaku") or ""),
            # Which episode one file is (stremio.py, from the Stremio id): names it instead of the file name's guess.
            "season": int(body.get("season") or 0), "number": int(body.get("number") or 0),
+           # stremio.py: a better copy of an episode already there (old files archived once the new one is down), and
+           # the file it's made from ("hash|name", emptied when the episode was there already and nothing was made).
+           "replace": bool(body.get("replace")), "pick": str(body.get("pick") or ""),
            "state": "queued", "step": "", "error": "", "episodes": []}
     jobs.insert(0, job)
     _queue.put(job)
@@ -229,6 +232,23 @@ def _ascii(text: str) -> str:
     """'Café Trip! Vlog #3' -> 'cafe_trip_vlog_3' (a Japanese title: '')."""
     plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
     return re.sub(r"[^a-z0-9]+", "_", plain).strip("_")
+
+
+def _show_dir(kind: Path, slug: str) -> Path:
+    """A show's folder: one already there whose name is [slug] but for underscores ('Lucky☆Star' -> 'luckystar' is
+    the library's lucky_star), else [slug]."""
+    same = slug.replace("_", "")
+    return next((d for d in kind.glob("*") if d.is_dir() and d.name.replace("_", "") == same), kind / slug) \
+        if kind.is_dir() else kind / slug
+
+
+def _archive(folder: Path, stem: str) -> None:
+    """An episode's files (<stem>.*) moved to archive\\removed\\<date>\\<show>\\ before a better copy is made."""
+    dest = cfg.archive / "removed" / time.strftime("%Y-%m-%d") / folder.name
+    # The video first: open (playing) it can't move, and then the episode stays whole.
+    for p in sorted(folder.glob(f"{stem}.*"), key=lambda p: p.suffix != ".mp4"):
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.move(p, dest / p.name)
 
 
 def _slug(folder: str) -> str:
@@ -439,8 +459,8 @@ def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str
     if lang == "ja" and anilist and not job["show"]:
         show = anilist.get("romaji") or show
     kind = job["type"] or ("anime" if lang == "ja" else "shows" if number else "movies")
-    slug = _ascii(show) or _ascii(Path(name).stem) or "video"
-    folder = cfg.library(job["key"]) / kind / slug
+    folder = _show_dir(cfg.library(job["key"]) / kind, _ascii(show) or _ascii(Path(name).stem) or "video")
+    slug = folder.name
     stem = f"{slug}_s{season or 1}_{number:02}" if number else slug
     folder.mkdir(parents=True, exist_ok=True)
     video = folder / f"{stem}.mp4"
@@ -465,15 +485,22 @@ def _rd(job: dict, tmp: Path) -> None:
     for i, f in enumerate(files, 1):
         prefix = f"{i}/{len(files)} "
         try:
-            # An episode named by stremio.py (show, season, number) that's already in the library isn't downloaded again.
+            # An episode named by stremio.py (show, season, number) that's already in the library isn't downloaded again,
+            # unless it's being replaced by a better copy.
+            old = None
             if job["show"] and job["number"]:
                 kind = job["type"] or ("anime" if job["lang"] == "ja" else "shows")
-                slug = _ascii(job["show"])
-                stem = f"{slug}_s{job['season'] or 1}_{job['number']:02}"
-                if (cfg.library(job["key"]) / kind / slug / f"{stem}.kumapie.json").exists():
-                    job["episodes"].append(stem)
-                    continue
+                folder = _show_dir(cfg.library(job["key"]) / kind, _ascii(job["show"]))
+                stem = f"{folder.name}_s{job['season'] or 1}_{job['number']:02}"
+                if (folder / f"{stem}.kumapie.json").exists():
+                    if not job.get("replace"):
+                        job["episodes"].append(stem)
+                        job["pick"] = ""
+                        continue
+                    old = (folder, stem)
             path = Path(realdebrid.download(job["rd"], f["link"], str(tmp / "download"), _Log(job, prefix)))
+            if old:
+                _archive(*old)
             _episodes(job, [_local(job, path, f["name"], f["single"], tmp, prefix)])  # each one as soon as it's made
             path.unlink()
         except Exception as e:  # noqa: BLE001 - one bad file doesn't stop a season's others

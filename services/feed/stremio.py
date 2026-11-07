@@ -50,7 +50,10 @@ RESOLUTION = {"4k": r"\b(4k|2160p)\b", "2k": r"\b(2k|1440p)\b", "1080p": r"\b108
               "480p": r"\b(480p|576p|sd)\b"}
 OPTIONS = 3  # entries per quality, best first
 MINUTES = {"movie": 110, "series": 45}  # when the catalog has no runtime
-JUNK = re.compile(r"\bnc ?(op|ed)|creditless|\b(op|ed|pv|cm)[ ._-]?\d*\b|preview|trailer|sample|menu", re.I)  # not the episode
+# Not the episode, or not watchable on a TV (3D side-by-side / over-under).
+JUNK = re.compile(r"\bnc ?(op|ed)|creditless|\b(op|ed|pv|cm)[ ._-]?\d*\b|preview|trailer|sample|menu"
+                  r"|\b(full-?|half-?|h-?)?sbs\b|\b(full-?|half-?|h-?)ou\b", re.I)
+HEIGHT = {"4k": 4, "2k": 3, "1080p": 2, "720p": 1, "480p": 0}
 DEAD = ("error", "magnet_error", "virus", "dead")  # Real-Debrid torrent states that never finish
 TAGS = [("AV1", r"\bav1\b"), ("HEVC", r"\b(hevc|x265|h\.?265)\b"), ("AVC", r"\b(avc|x264|h\.?264)\b"),
         ("10bit", r"10-?bit|hi10"), ("WEB", r"\bweb(-?dl|-?rip)?\b"), ("Remux", r"remux"),
@@ -118,15 +121,22 @@ def candidates(type_: str, sid: str, token: str) -> list[dict]:
                 "res": s.get("name", ""), "text": " ".join(lines[:stats]), "cached": "RD+" in s.get("name", ""),
                 "seeders": _find(r"👤\s*(\d+)", st), "site": _find(r"⚙️\s*(.+)", st),
                 "langs": lines[stats + 1] if stats + 1 < len(lines) else ""}
-    # Comet also lists torrent names without a file, books, other episodes: only a video file of this episode, whose
-    # number is the id's or one at least two of Torrentio's files have (absolute numbers: S2E1 = "- 25").
+    # Comet also lists torrent names without a file, books, other shows' S01E01, other episodes: only a video file of
+    # this show (a name from the catalog or Torrentio's files in its name) and episode (the id's number or one at least
+    # two of Torrentio's files have: absolute numbers, S2E1 = "- 25").
+    try:
+        about = meta(type_, sid)
+    except (OSError, ValueError):
+        about = {"names": []}
+    shows = {n for n in map(_plain, about["names"] + [realdebrid.show_name(c["file"]) for c in out.values()]) if len(n) >= 4}
     season, number = numbers(sid)
     seen = Counter(realdebrid.numbers(c["file"])[1] for c in out.values())
     known = {number} | {n for n, k in seen.items() if k >= 2}
 
     def right(file: str) -> bool:
         s, n = realdebrid.numbers(file)
-        return number is None or n in known and (s is None or s == season or sid.startswith("kitsu:"))
+        return any(n in _plain(file, False) for n in shows) and (
+            number is None or n in known and (s is None or s == season or sid.startswith("kitsu:")))
     for s in com:
         h, hints, idx = str(s.get("infoHash") or "").lower(), s.get("behaviorHints") or {}, s.get("fileIdx")
         file, text = hints.get("filename") or "", s.get("description", "")
@@ -137,6 +147,16 @@ def candidates(type_: str, sid: str, token: str) -> list[dict]:
                               "text": text, "cached": None, "seeders": None,
                               "site": "Comet" + (f" · {w}" if (w := _find(r"🔎\s*(.+)", text)) else ""), "langs": ""}
     return [c for c in out.values() if not JUNK.search(c["file"]) and c["gb"] >= 0.03]
+
+
+def _plain(name: str, season: bool = True) -> str:
+    """A show's name to compare with a file's: letters and digits only, no leading "the", no "2nd Season" / "Season 2"
+    ([season] False: a file name, left whole)."""
+    name = name.lower()
+    if season:
+        name = re.sub(r"\b(season|part|cour)\s*\d+|\d+(st|nd|rd|th)\s*season|\bs\d+\b|\(\d{4}\)", " ", name)
+        name = re.sub(r"^\W*the\b", "", name)
+    return re.sub(r"[\W_]+", "", name)
 
 
 def tags(c: dict) -> list[str]:
@@ -166,9 +186,10 @@ def _mbps(c: dict, minutes: float) -> float:
 
 def rank(c: dict, minutes: float) -> tuple:
     """Smaller is better: first a file jobs._remux copies as it is (H.264 / HEVC at any bitrate; a codec the name
-    doesn't say is most likely H.264), not one it re-encodes (AV1); then not a file Real-Debrid is known not to have;
-    then the highest bitrate."""
-    return "AV1" in tags(c), c["cached"] is False, -_mbps(c, minutes)
+    doesn't say is most likely H.264), not one it re-encodes (AV1); then the highest resolution (Blu-rays come in
+    several); then not a file Real-Debrid is known not to have; then the highest bitrate."""
+    height = max((HEIGHT[q] for q in qualities(c) if q in HEIGHT), default=-1)
+    return "AV1" in tags(c), -height, c["cached"] is False, -_mbps(c, minutes)
 
 
 def ranked(found: list[dict], minutes: float, torrent: str = "") -> list[dict]:
@@ -251,7 +272,7 @@ def meta(type_: str, sid: str) -> dict:
                      key=lambda e: (e[1], e[2] or 0))
         run = str(m.get("runtime") or next((v.get("runtime") for v in m.get("videos") or [] if v.get("runtime")), ""))
         h, mins = re.search(r"(\d+)\s*h", run), re.search(r"(\d+)\s*m", run) or re.fullmatch(r"\s*(\d+)\s*", run)
-        _metas[base] = {"name": m.get("name") or base, "episodes": eps,
+        _metas[base] = {"name": m.get("name") or base, "episodes": eps, "names": [m.get("name") or ""] + (m.get("aliases") or []),
                         "minutes": (int(h[1]) * 60 if h else 0) + (int(mins[1]) if mins else 0)}
     return _metas[base]
 
@@ -286,10 +307,11 @@ def _made(tv, lib: str, job: dict) -> str | None:
 
 
 def _queue(base: str, person: str, lang: str, type_: str, sids: list[str], q: str, first: dict | None = None,
-           torrent: str = "") -> None:
+           torrent: str = "", replace: bool = False) -> None:
     """Queues one job per id, in order: [first] (the picked file) for the first, the others from [torrent] (then the
-    first's) where it has them, else the best of quality [q] (in the background: the indexers and Real-Debrid take seconds, a file
-    Real-Debrid doesn't have yet minutes); stand-ins answer until then."""
+    first's) where it has them, else the best of quality [q] (in the background: the indexers and Real-Debrid take
+    seconds, a file Real-Debrid doesn't have yet minutes); stand-ins answer until then. [replace]: an episode already
+    in the library is made again from that file (jobs.py archives the old one)."""
     if not sids or base + sids[0] in _running:
         first = None
     sids = [s for s in sids if base + s not in _running]
@@ -317,7 +339,8 @@ def _queue(base: str, person: str, lang: str, type_: str, sids: list[str], q: st
                 got = jobs.submit({"person": person, "lang": lang, "url": link, "rd": token, "show": about_["name"],
                                    "jimaku": os.environ.get("JIMAKU_API_KEY", "") if lang == "ja" else "",
                                    "type": "anime" if sid.startswith("kitsu:") else "movies" if type_ == "movie" else "shows",
-                                   "season": season or 0, "number": number or 0})
+                                   "season": season or 0, "number": number or 0,
+                                   "replace": replace, "pick": f"{c['hash']}|{c['file']}"})
                 live = next(j for j in jobs.jobs if j["id"] == got["id"])  # the live one, its state changes
             except (ValueError, OSError, KeyError, RuntimeError) as err:  # RuntimeError: Real-Debrid's answer
                 stand[sid].update(state="failed", error=str(err)[:200])
@@ -328,15 +351,17 @@ def _queue(base: str, person: str, lang: str, type_: str, sids: list[str], q: st
     threading.Thread(target=run, daemon=True).start()
 
 
-def _ready(tv, lib: str, key: str) -> str | None:
-    eid = _done().get(key)
-    if eid in tv.episodes:
-        return eid
+def _ready(tv, lib: str, key: str, want: str = "") -> str | None:
+    """The episode of [key] if it's in the library, made from file [want] ("hash|name") when that's given. DONE also
+    keeps "from|<key>": the file each episode was made from."""
     job = _running.get(key)
-    if job and (eid := _made(tv, lib, job)):
-        DONE.write_text(json.dumps({**_done(), key: eid}), encoding="utf-8")
-        return eid
-    return None
+    if job and (eid := _made(tv, lib, job)):  # made (or found there) by a job: remember which file it's from
+        del _running[key]
+        DONE.write_text(json.dumps({**_done(), key: eid, **({"from|" + key: job["pick"]} if job.get("pick") else {})}),
+                        encoding="utf-8")
+    done = _done()
+    eid = done.get(key)
+    return eid if eid in tv.episodes and (not want or done.get("from|" + key) == want) else None
 
 
 def prepare(tv, body: dict) -> dict:
@@ -350,9 +375,12 @@ def prepare(tv, body: dict) -> dict:
         raise ValueError("bad prepare request")
     base = f"{person}|{lang}|"
     key = base + sid
+    # A picked file is a wish for that very file: an episode made from another one (or before this was recorded) is
+    # made again from it, the old one archived.
+    want = f"{first['hash']}|{first['file']}" if first else ""
     with _lock:
         tv.synced()
-        if eid := _ready(tv, lib, key):
+        if eid := _ready(tv, lib, key, want):
             answer = {"state": "ready", "id": eid}
         else:
             job = _running.get(key)
@@ -361,7 +389,7 @@ def prepare(tv, body: dict) -> dict:
                 if job["state"] == "failed":
                     return {"state": "failed", "step": "", "error": job["error"]}
             if key not in _running:
-                _queue(base, person, lang, type_, [sid], q, first)
+                _queue(base, person, lang, type_, [sid], q, first, replace=bool(first))
             job = _running[key]
             answer = {"state": job["state"], "step": job["step"], "error": job["error"]}
         if type_ == "series":
@@ -375,9 +403,14 @@ def prepare(tv, body: dict) -> dict:
                 more = [e[0] for e in eps if e[1] == numbers(sid)[0] and e[0] != sid]
             else:  # ready by the time this one ends, the next season's first ones too
                 more = ids[at + 1:at + 1 + AHEAD] if at >= 0 else []
-            more = [s for s in more if base + s not in _running and _done().get(base + s) not in tv.episodes]
+            # A whole season picked from one release replaces the season's other episodes not made from it either.
+            again = bool(season and first)
+            done = _done()
+            more = [s for s in more if base + s not in _running and not (
+                done.get(base + s) in tv.episodes
+                and (not again or done.get("from|" + base + s, "").startswith(first["hash"] + "|")))]
             if more:
-                _queue(base, person, lang, type_, more, q, torrent=first["hash"] if first else "")
+                _queue(base, person, lang, type_, more, q, torrent=first["hash"] if first else "", replace=again)
         return answer
 
 
@@ -392,8 +425,16 @@ if __name__ == "__main__":
     # highest bitrate first (a remux too), the one Real-Debrid lacks after those, the re-encoded AV1 last
     assert order == [remux["file"], big_hevc["file"], plain["file"], hevc["file"], old["file"], av1["file"]], order
     assert ranked([av1, hevc], 24, torrent="a" * 40)[0] is av1  # a season's torrent first
+    bd720, bd1080 = c("a BDRip.mkv", 1.2, res="720p", h="g"), c("b Bluray.mkv", 0.9, h="h")
+    assert ranked([bd720, bd1080], 24)[0] is bd1080  # the higher resolution before a higher bitrate
+    assert JUNK.search("Breaking.Bad.S01E02.1080p.3D.FULL-SBS.HEVC.mkv") and JUNK.search("Movie.2010.3D.H-OU.mkv")
+    assert not JUNK.search("3D Kanojo - 01.mkv") and not JUNK.search("Tu ou moi - 01.mkv")
     assert qualities(av1) == {"1080p", "BD"} and qualities(c("a.mkv", 1, res="Comet 2160p")) == {"4k"}
     assert JUNK.search("[Shiniori-Raws] Show S2 - NCOP 01 (BD 2160p).mkv") and not JUNK.search("Show 01 [Opus].mkv")
+    assert _plain("Kusuriya no Hitorigoto 2nd Season") in _plain("[x] Kusuriya no Hitorigoto - 25.mkv", False)
+    assert _plain("The Apothecary Diaries Season 2") in _plain("The.Apothecary.Diaries.S02E01.mkv", False)
+    assert _plain("Lucky☆Star") in _plain("Lucky.Star.S01E01.1080p.mkv", False)
+    assert _plain("Lucky☆Star") not in _plain("Monthly.Girls.Nozaki-kun.S01E01.mkv", False)
     assert ID.match("kitsu:43248:1") and ID.match("tt0903747:1:2") and ID.match("tt0111161")
     assert not ID.match("tt1/../x")
     assert numbers("tt0903747:1:2") == (1, 2) and numbers("kitsu:43248:5") == (1, 5) and numbers("tt1") == (None, None)
