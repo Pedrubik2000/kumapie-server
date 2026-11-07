@@ -69,11 +69,12 @@ def streams(person: str, type_: str, sid: str) -> dict:
         if q == "BD":  # which resolution the Blu-ray file is
             size = " ".join(sorted(qualities(best) - {"BD"})) + " · " + size
         slow = "" if "RD+" in best.get("name", "") else " · not on Real-Debrid yet (slower)"
+        info = about(best)
         for season in seasons:
             for lang in langs:
                 out.append({"name": f"kumapie\n{q}",
                             "title": f"{NAMES.get(lang, lang)} · {'whole season' if season else 'this one'} · 💾 {size}"
-                                     f"{' an episode' if season else ''}{slow}",
+                                     f"{' an episode' if season else ''}{slow}{info}",
                             "externalUrl": "kumapie://prepare?" + urllib.parse.urlencode(
                                 {"person": person, "lang": lang, "type": type_, "id": sid, "q": q,
                                  **({"season": "1"} if season else {})})})
@@ -87,6 +88,28 @@ def qualities(s: dict) -> set[str]:
     if re.search(r"blu-?ray|\bbd(rip|remux)?\b|remux", title):
         got.add("BD")
     return got
+
+
+TAGS = [("AV1", r"\bav1\b"), ("HEVC", r"\b(hevc|x265|h\.?265)\b"), ("AVC", r"\b(avc|x264|h\.?264)\b"),
+        ("10bit", r"10-?bit|hi10"), ("WEB", r"\bweb(-?dl|-?rip)?\b"), ("Remux", r"remux"),
+        ("FLAC", r"flac"), ("Opus", r"\bopus\b"), ("DD+", r"e-?ac-?3|\bddp|dd\+"), ("AC3", r"(?<![e-])\bac-?3\b"),
+        ("AAC", r"\baac\b"), ("DTS", r"\bdts\b"), ("Dual Audio", r"dual[ ._-]?audio"), ("Multi Subs", r"multi[ ._-]?subs")]
+
+
+def about(s: dict) -> str:
+    """More lines for an entry, from the Torrentio stream it will download: codec / audio tags, seeders and site,
+    the torrent's languages, the file's name."""
+    lines = s.get("title", "").split("\n")
+    stats = next((i for i, line in enumerate(lines) if line.startswith("👤")), len(lines))
+    file = (s.get("behaviorHints") or {}).get("filename") or (lines[stats - 1] if stats else "")
+    words = " ".join(lines[:stats]).lower()
+    tags = [t for t, pat in TAGS if re.search(pat, words)]
+    seeders, site = re.search(r"👤\s*(\d+)", lines[stats]) if stats < len(lines) else None, \
+        re.search(r"⚙️\s*(.+)", lines[stats]) if stats < len(lines) else None
+    out = [" · ".join(tags),
+           " · ".join(x for x in [f"👤 {seeders[1]}" if seeders else "", f"⚙️ {site[1].strip()}" if site else ""] if x),
+           f"🌐 {lines[stats + 1]}" if stats + 1 < len(lines) else "", f"📄 {file}" if file else ""]
+    return "".join("\n" + x for x in out if x)
 
 
 def _get(url: str):
@@ -271,5 +294,10 @@ if __name__ == "__main__":
     assert qualities(t[0]) == {"4k"} and qualities(t[4]) == {"1080p", "BD"}
     assert ID.match("kitsu:43248:1") and ID.match("tt0903747:1:2") and ID.match("tt0111161")
     assert not ID.match("tt1/../x")
+    pi = {"title": "The.Apothecary.Diaries.S02.1080p.BluRay.Dual-Audio.Opus.2.0.AV1-Pi13\nX - S02E01 (Bluray-1080p AV1 "
+                   "Opus)-Pi13.mkv\n👤 87 💾 463.36 MB ⚙️ NyaaSi\nDubbed / Dual Audio / 🇬🇧"}
+    assert about(pi) == ("\nAV1 · Opus · Dual Audio\n👤 87 · ⚙️ NyaaSi\n🌐 Dubbed / Dual Audio / 🇬🇧"
+                         "\n📄 X - S02E01 (Bluray-1080p AV1 Opus)-Pi13.mkv"), about(pi)
+    assert about({"title": "a E-AC3 x265 10bit.mkv\n👤 1 💾 1 GB ⚙️ 1337x"}).startswith("\nHEVC · 10bit · DD+\n")
     assert numbers("tt0903747:1:2") == (1, 2) and numbers("kitsu:43248:5") == (1, 5) and numbers("tt1") == (None, None)
     print("ok")
