@@ -53,7 +53,9 @@ def make(video: Path, person, force: bool) -> bool:
         return False
     translated = video.with_name(f"{video.stem}.{person.translation}.srt")
     rel = video.relative_to(cfg.library_root).as_posix()
-    eid = hashlib.sha1(rel.encode()).hexdigest()[:12]  # as tv.episode_id: the path is the source
+    kept = video.with_suffix(".id.txt")  # a replaced episode's own id (jobs.py), e.g. a device's "local-..."
+    eid = kept.read_text(encoding="utf-8").strip() if kept.exists() else \
+        hashlib.sha1(rel.encode()).hexdigest()[:12]  # as tv.episode_id: the path is the source
     kind = video.relative_to(cfg.library(person.key)).parts[0]
     m = EPISODE.search(video.stem)
     season, number = (int(m.group(1)), int(m.group(2))) if m else (None, None)

@@ -87,9 +87,10 @@ def _save() -> None:
 
 def _again(saved: list[dict]) -> list[dict]:
     """Saved jobs (newest first) -> oldest first, queued again. Each kind skips what it already made (AniWorld goes on
-    in its kept work folder). One cut off 3 times fails instead: it may be what brings the server down."""
+    in its kept work folder). One cut off 3 times fails instead: it may be what brings the server down. Only a
+    running one counts: six code edits in an afternoon failed a whole queued season (2026-11-07)."""
     for job in saved:
-        job["restarts"] = job.get("restarts", 0) + 1
+        job["restarts"] = job.get("restarts", 0) + (job["state"] == "running")
         if job["restarts"] > 3:
             job.update(state="failed", error="stopped by 3 restarts of the server")
         else:
@@ -500,7 +501,13 @@ def _rd(job: dict, tmp: Path) -> None:
                     old = (folder, stem)
             path = Path(realdebrid.download(job["rd"], f["link"], str(tmp / "download"), _Log(job, prefix)))
             if old:
+                # The new copy keeps the old one's id (pc_episodes.py reads <stem>.id.txt): a device-made episode's
+                # "local-..." id is how the devices, the progress and the seen scenes know it (2026-11-07, Lucky Star
+                # 1-3 came back as a second show).
+                was = json.loads((old[0] / f"{old[1]}.kumapie.json").read_text(encoding="utf-8")).get("id")
                 _archive(*old)
+                if was:
+                    (old[0] / f"{old[1]}.id.txt").write_text(was, encoding="utf-8")
             _episodes(job, [_local(job, path, f["name"], f["single"], tmp, prefix)])  # each one as soon as it's made
             path.unlink()
         except Exception as e:  # noqa: BLE001 - one bad file doesn't stop a season's others

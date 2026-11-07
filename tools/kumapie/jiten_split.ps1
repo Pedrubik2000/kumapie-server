@@ -16,5 +16,6 @@ if ($LASTEXITCODE) { throw "couldn't read config.toml [kumapie.splitter]" }
 $env:JAVA_HOME, $env:KUMAPIE_JITEN_LEXICON, $env:KUMAPIE_SUDACHI_USER, $env:KUMAPIE_SUDACHI_DIC, $tmp, $app = $paths
 $env:TEMP = $env:TMP = $tmp  # Gradle on Windows needs a short TEMP
 $quoted = ($args | ForEach-Object { "'$_'" }) -join " "
-& "$app\gradlew.bat" -q -p "$app" :lang:jitenSplit "--args=$quoted"
+# No problems report: a run failed on its file (FileAlreadyExistsException, 2026-11-07) and the episode with it.
+& "$app\gradlew.bat" -q --no-problems-report -p "$app" :lang:jitenSplit "--args=$quoted"
 exit $LASTEXITCODE
