@@ -63,6 +63,7 @@ AHEAD = 2  # episodes queued after the one being watched
 _lock = threading.Lock()
 _running: dict[str, dict] = {}  # key -> its jobs.py job (or a stand-in until it's queued)
 _metas: dict[str, dict] = {}
+_torrents: dict[str, threading.Lock] = {}  # torrent hash -> held while Real-Debrid gets one of its files
 
 
 def manifest(person: str) -> dict:
@@ -228,7 +229,18 @@ def _file_of(info: dict, file: str, idx: int) -> dict | None:
 
 def _rd_link(token: str, h: str, file: str, idx: int, step) -> str:
     """The Real-Debrid link of one file of torrent [h]: from a torrent the account already has with it picked, else
-    the magnet added with only that file; waits while Real-Debrid downloads it ([step] gets the progress)."""
+    the magnet added with only that file; waits while Real-Debrid downloads it ([step] gets the progress). One torrent
+    at a time: two copies of one torrent downloading at once, the second ends in "error" (2026-11-07, a season pack's
+    E1 picked and E2 queued ahead in the same second)."""
+    with _lock:
+        lock = _torrents.setdefault(h, threading.Lock())
+    if lock.locked():
+        step("waiting for Real-Debrid to finish the same torrent's other episode")
+    with lock:
+        return _rd_link_now(token, h, file, idx, step)
+
+
+def _rd_link_now(token: str, h: str, file: str, idx: int, step) -> str:
     step("asking Real-Debrid")
     tid, f = None, None
     for t in realdebrid._call(token, "GET", "/torrents?limit=100") or []:
