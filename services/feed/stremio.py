@@ -2,8 +2,8 @@
 
 A Stremio add-on per person: every movie or episode gets the best three files per quality that Torrentio and Comet
 know, each as "this one" / "whole season" per language of that person's libraries (anime, Kitsu ids: Japanese only).
-Best = the PC keeps the video as it is (H.264 / HEVC up to 15 Mbps; AV1 or heavier gets re-encoded), then the highest
-bitrate. Each entry's only link is kumapie://prepare?...&hash&file&idx. NuvioTV opens such a link straight in kumapie
+Best = the highest bitrate (Pedro watches on a 4K TV), files the PC must re-encode (AV1: the TV can't play it)
+last. Each entry's only link is kumapie://prepare?...&hash&file&idx. NuvioTV opens such a link straight in kumapie
 (VIEW + BROWSABLE, no "Open with" menu, which hides kumapie on the TCL TV). kumapie then asks the PC to prepare it: the
 PC adds that torrent's file to Real-Debrid (waiting while Real-Debrid downloads one it doesn't have yet), jobs.py makes
 the library episode (its own subtitles, else Jimaku, else Parakeet), and kumapie plays it from the PC like any other.
@@ -49,7 +49,6 @@ QUALITIES = ["BD", "4k", "2k", "1080p", "720p", "480p"]  # the add-on's order
 RESOLUTION = {"4k": r"\b(4k|2160p)\b", "2k": r"\b(2k|1440p)\b", "1080p": r"\b1080p\b", "720p": r"\b720p\b",
               "480p": r"\b(480p|576p|sd)\b"}
 OPTIONS = 3  # entries per quality, best first
-COPY_MBPS = 15  # jobs._remux keeps H.264 / HEVC up to this as it is and re-encodes anything else
 MINUTES = {"movie": 110, "series": 45}  # when the catalog has no runtime
 JUNK = re.compile(r"\bnc ?(op|ed)|creditless|\b(op|ed|pv|cm)[ ._-]?\d*\b|preview|trailer|sample|menu", re.I)  # not the episode
 DEAD = ("error", "magnet_error", "virus", "dead")  # Real-Debrid torrent states that never finish
@@ -83,12 +82,12 @@ def streams(person: str, type_: str, sid: str) -> dict:
         for c in ranked([c for c in found if q in qualities(c)], minutes):
             best.setdefault(c["file"], c)
         for c in list(best.values())[:OPTIONS]:
-            gb, mbps, bucket = c["gb"], _mbps(c, minutes), rank(c, minutes)[0]
+            gb, mbps, redo = c["gb"], _mbps(c, minutes), rank(c, minutes)[0]
             size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1000:.0f} MB"
             if q == "BD":  # which resolution the Blu-ray file is
-                size = " ".join(sorted(qualities(c) - {"BD"})) + " · " + size
+                size = " · ".join(sorted(qualities(c) - {"BD"}) + [size])
             notes = ("" if c["cached"] else " · ⏳ Real-Debrid downloads it first" if c["cached"] is False
-                     else " · ⏳ maybe not on Real-Debrid yet") + (" · 🔄 the PC re-encodes it" if bucket == 2 else "")
+                     else " · ⏳ maybe not on Real-Debrid yet") + (" · 🔄 the PC re-encodes it" if redo else "")
             for season in seasons:
                 for lang in langs:
                     out.append({"name": f"kumapie\n{q}",
@@ -166,12 +165,10 @@ def _mbps(c: dict, minutes: float) -> float:
 
 
 def rank(c: dict, minutes: float) -> tuple:
-    """Smaller is better: 0 the PC copies the video as it is, 1 codec unknown, 2 re-encoded (AV1 & co., over
-    COPY_MBPS); then not a file Real-Debrid is known not to have; then the highest bitrate."""
-    t, mbps = tags(c), _mbps(c, minutes)
-    codec = [x for x in ("AV1", "HEVC", "AVC") if x in t]
-    bucket = 2 if mbps > COPY_MBPS or "AV1" in codec else 0 if codec else 1
-    return bucket, c["cached"] is False, -mbps
+    """Smaller is better: first a file jobs._remux copies as it is (H.264 / HEVC at any bitrate; a codec the name
+    doesn't say is most likely H.264), not one it re-encodes (AV1); then not a file Real-Debrid is known not to have;
+    then the highest bitrate."""
+    return "AV1" in tags(c), c["cached"] is False, -_mbps(c, minutes)
 
 
 def ranked(found: list[dict], minutes: float, torrent: str = "") -> list[dict]:
@@ -392,8 +389,8 @@ if __name__ == "__main__":
     big_hevc, remux = c("z HEVC 10bit.mkv", 1.9, h="c", cached=None), c("w BD Remux AVC.mkv", 6.2, h="d")
     plain, old = c("[SubsPlease] Show - 25 (1080p).mkv", 1.36, h="e"), c("v x264.mkv", 2.0, h="f", cached=False)
     order = [x["file"] for x in ranked([av1, hevc, big_hevc, remux, plain, old], 24)]
-    # copied as is (highest bitrate first, the one Real-Debrid lacks last) < codec unknown < re-encoded
-    assert order == [big_hevc["file"], hevc["file"], old["file"], plain["file"], remux["file"], av1["file"]], order
+    # highest bitrate first (a remux too), the one Real-Debrid lacks after those, the re-encoded AV1 last
+    assert order == [remux["file"], big_hevc["file"], plain["file"], hevc["file"], old["file"], av1["file"]], order
     assert ranked([av1, hevc], 24, torrent="a" * 40)[0] is av1  # a season's torrent first
     assert qualities(av1) == {"1080p", "BD"} and qualities(c("a.mkv", 1, res="Comet 2160p")) == {"4k"}
     assert JUNK.search("[Shiniori-Raws] Show S2 - NCOP 01 (BD 2160p).mkv") and not JUNK.search("Show 01 [Opus].mkv")
