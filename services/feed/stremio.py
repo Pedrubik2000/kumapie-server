@@ -135,7 +135,8 @@ def candidates(type_: str, sid: str, token: str) -> list[dict]:
 
     def right(file: str) -> bool:
         s, n = realdebrid.numbers(file)
-        return any(n in _plain(file, False) for n in shows) and (
+        # The file's own show name, not just one inside it: "Hirogaru Sky! Pretty Cure" isn't "Pretty Cure".
+        return _plain(realdebrid.show_name(file)) in shows and (
             number is None or n in known and (s is None or s == season or sid.startswith("kitsu:")))
     for s in com:
         h, hints, idx = str(s.get("infoHash") or "").lower(), s.get("behaviorHints") or {}, s.get("fileIdx")
@@ -154,7 +155,7 @@ def _plain(name: str, season: bool = True) -> str:
     ([season] False: a file name, left whole)."""
     name = name.lower()
     if season:
-        name = re.sub(r"\b(season|part|cour)\s*\d+|\d+(st|nd|rd|th)\s*season|\bs\d+\b|\(\d{4}\)", " ", name)
+        name = re.sub(r"\b(season|part|cour)\s*\d+|\b\d+(st|nd|rd|th)\b(\s*season)?|\bs\d+\b|\(\d{4}\)", " ", name)
         name = re.sub(r"^\W*the\b", "", name)
     return re.sub(r"[\W_]+", "", name)
 
@@ -238,7 +239,13 @@ def _rd_link(token: str, h: str, file: str, idx: int, step) -> str:
                 break
     if not tid:
         tid = realdebrid._call(token, "POST", "/torrents/addMagnet", {"magnet": f"magnet:?xt=urn:btih:{h}"})["id"]
+        since = time.time()
         while (info := realdebrid._call(token, "GET", f"/torrents/info/{tid}"))["status"] == "magnet_conversion":
+            if time.time() - since > 300:  # nobody shares it: Real-Debrid would wait forever (2026-11-07, Pretty Cure)
+                realdebrid._call(token, "DELETE", f"/torrents/delete/{tid}")
+                raise ValueError("Real-Debrid couldn't read that torrent in 5 minutes (nobody shares it?): "
+                                 "pick another one")
+            step(f"Real-Debrid is reading the torrent ({int(time.time() - since)} s)")
             time.sleep(3)
         if not (f := _file_of(info, file, idx)):
             raise ValueError(f"Real-Debrid found no {file} in that torrent")
@@ -435,6 +442,10 @@ if __name__ == "__main__":
     assert _plain("The Apothecary Diaries Season 2") in _plain("The.Apothecary.Diaries.S02E01.mkv", False)
     assert _plain("Lucky☆Star") in _plain("Lucky.Star.S01E01.1080p.mkv", False)
     assert _plain("Lucky☆Star") not in _plain("Monthly.Girls.Nozaki-kun.S01E01.mkv", False)
+    for f in ["The.Apothecary.Diaries.S02E01.1080p.mkv", "[x] Kusuriya no Hitorigoto 2nd Season - 01.mkv",
+              "[Moe] Lucky☆Star - 01 [BD].mkv", "Lucky Star S01E01 The Girl Who Dashes Off[x].mkv"]:
+        assert _plain(realdebrid.show_name(f)) in {"apothecarydiaries", "kusuriyanohitorigoto", "luckystar"}, f
+    assert _plain(realdebrid.show_name("[P] Hirogaru Sky! Pretty Cure S01E01.mkv")) != "prettycure"
     assert ID.match("kitsu:43248:1") and ID.match("tt0903747:1:2") and ID.match("tt0111161")
     assert not ID.match("tt1/../x")
     assert numbers("tt0903747:1:2") == (1, 2) and numbers("kitsu:43248:5") == (1, 5) and numbers("tt1") == (None, None)
