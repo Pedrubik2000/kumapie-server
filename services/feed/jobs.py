@@ -375,16 +375,18 @@ def _translation(key: str) -> str:
 def _remux(src: Path, dst: Path, lang: str) -> None:
     """Any video -> MP4 for the phones: the episode language's audio as AAC; H.264 / HEVC video copied as it is, at
     any bitrate (Pedro watches on a 4K TV: squeezing a remux to 5 Mbps showed noise and blocks in dark scenes, user
-    2026-11-07). Anything else (AV1: the bedroom TV's MediaTek decoder shows one frame and stalls) -> 10-bit HEVC at
-    CRF 18 (8-bit H.264 banded in dark gradients)."""
-    probe = json.loads(_out([FFPROBE, "-v", "error", "-show_entries", "stream=index,codec_type,codec_name:stream_tags=language:format=bit_rate",
+    2026-11-07). Anything else (AV1: the bedroom TV's MediaTek decoder shows one frame and stalls; 10-bit H.264,
+    which Android's decoders don't play: a Futari wa Pretty Cure BD, 2026-11-08) -> 10-bit HEVC at CRF 18 (8-bit
+    H.264 banded in dark gradients)."""
+    probe = json.loads(_out([FFPROBE, "-v", "error", "-show_entries", "stream=index,codec_type,codec_name,pix_fmt:stream_tags=language:format=bit_rate",
                              "-of", "json", src]))
     audio = [s for s in probe["streams"] if s["codec_type"] == "audio"]
     if not audio:
         raise RuntimeError(f"no sound in {src.name}")
     track = next((s for s in audio if (s.get("tags") or {}).get("language", "").lower() in AUDIO.get(lang, (lang,))), audio[0])
-    codec = next((s.get("codec_name") for s in probe["streams"] if s["codec_type"] == "video"), "")
-    video = ["-c:v", "copy"] if codec in ("h264", "hevc") else \
+    v = next((s for s in probe["streams"] if s["codec_type"] == "video"), {})
+    playable = {"h264": ("yuv420p", "yuvj420p"), "hevc": ("yuv420p", "yuvj420p", "yuv420p10le")}
+    video = ["-c:v", "copy"] if v.get("pix_fmt") in playable.get(v.get("codec_name"), ()) else \
         ["-c:v", "libx265", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1"]
     part = dst.with_name(dst.stem + ".part.mp4")
     _run([FFMPEG, "-v", "error", "-y", "-i", src, "-map", "0:v:0", "-map", f"0:{track['index']}", *video,
