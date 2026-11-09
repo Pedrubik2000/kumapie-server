@@ -394,15 +394,29 @@ def _remux(src: Path, dst: Path, lang: str) -> None:
     part.replace(dst)
 
 
+def _parts(log: str) -> list[tuple[int, float]]:
+    """alass's moved blocks: (lines, shift in s)."""
+    return [(int(n), (-1 if sign else 1) * (int(h) * 3600 + int(m) * 60 + float(s)))
+            for n, sign, h, m, s in re.findall(r"shifted block of (\d+) subtitles .*? by (-?)(\d+):(\d+):(\d+\.\d+)", log)]
+
+
 def _strays(log: str) -> bool:
     """alass moved a part of 5+ lines over 20 s away from the biggest part (an opening song taken for speech): the
     phone's SubSync.strayPart."""
-    parts = [(int(n), (-1 if sign else 1) * (int(h) * 3600 + int(m) * 60 + float(s)))
-             for n, sign, h, m, s in re.findall(r"shifted block of (\d+) subtitles .*? by (-?)(\d+):(\d+):(\d+\.\d+)", log)]
+    parts = _parts(log)
     if not parts:
         return False
     main = max(parts)[1]
     return any(n >= 5 and abs(shift - main) > 20 for n, shift in parts)
+
+
+def _fit(ref: Path, raw: Path, fitted: Path) -> float:
+    """[raw] fitted to [ref] with alass into [fitted] -> how far its biggest part moved (s)."""
+    log = _out([ALASS, ref, raw, fitted, "--split-penalty", "11"], both=True)
+    if _strays(log):
+        log = _out([ALASS, ref, raw, fitted, "--no-split"], both=True)
+    parts = _parts(log)
+    return abs(max(parts)[1]) if parts else 0.0
 
 
 def _jimaku(job: dict, video: Path, show: str, season, number, name: str, tmp: Path, english: Path | None):
@@ -410,16 +424,34 @@ def _jimaku(job: dict, video: Path, show: str, season, number, name: str, tmp: P
     found = json.loads(jimaku.candidates(job["jimaku"], show, season, number, name))
     if not found["files"]:
         return None, found.get("anilist")
-    pick = found["files"][0]
-    raw = Path(jimaku.download(job["jimaku"], pick["url"], pick["name"], number, str(tmp)))
-    # The video's own English subtitles, else the video itself (alass finds its speech). Silero's speech spans, the
-    # phone's reference, put Lucky Star 01 45 s off (its opening song); these two both got it right to 0.03 s.
-    ref = english or video
-    fitted = tmp / f"fitted{raw.suffix.lower()}"
-    log = _out([ALASS, ref, raw, fitted, "--split-penalty", "11"], both=True)
-    if _strays(log):
-        _out([ALASS, ref, raw, fitted, "--no-split"], both=True)
-    cues = json.loads(jimaku.cues(str(fitted), "ja"))
+    # The video's own English subtitles, else a Parakeet transcript of it (~1 min). Silero's speech spans, the
+    # phone's reference, put Lucky Star 01 45 s off (its opening song). The video itself (alass finds its speech) got
+    # Lucky Star right but sent Precure's right file 44 s off and its TV one 5 s; Parakeet's lines got both right.
+    ref = english
+    if not ref:
+        job["step"] = job.get("step", "") + " (timing reference: Parakeet)"
+        try:
+            _run([VENV / "python.exe", cfg.pipeline / "parakeet.py", "--ja", PARAKEET_JA, "-o", "reference", video], cwd=tmp)
+            ref = tmp / "reference.srt"
+        except subprocess.CalledProcessError:
+            ref = video
+    # Up to 4 files, the one alass moves least: already timed to this release. Precure 25's first pick was a TV
+    # recording 36 s off with ad breaks that alass couldn't undo; the [Retimed] one beside it was 0.05 s off.
+    fits = []
+    for i, pick in enumerate(found["files"][:4]):
+        try:
+            raw = Path(jimaku.download(job["jimaku"], pick["url"], pick["name"], number, str(tmp / f"jimaku{i}")))
+        except Exception as e:  # a zip without this episode, a failed download: the next file
+            print(f"jimaku {pick['name']}: {e}", flush=True)
+            continue
+        fitted = tmp / f"fitted{i}{raw.suffix.lower()}"
+        fits.append((_fit(ref, raw, fitted), i, fitted))
+        print(f"jimaku {pick['name']}: moved {fits[-1][0]:.2f} s", flush=True)
+        if fits[-1][0] < 1:
+            break  # already timed to this video
+    if not fits:
+        return None, found.get("anilist")
+    cues = json.loads(jimaku.cues(str(min(fits)[2]), "ja"))
     return (_snap(cues, json.loads(jimaku.cues(str(english), "en"))) if english else cues), found.get("anilist")
 
 
