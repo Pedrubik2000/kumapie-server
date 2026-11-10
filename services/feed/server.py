@@ -18,6 +18,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   GET  /api/models/ja-dicts[/<zip>]  Japanese Yomitan zips the TVs import for mining (list, file; state\\dicts\\yomitan-ja)
   POST /api/tv/meta         {"show", "kind", "source", "id"}: "Fix match" for a PC show (tv.py, meta.py)
   /api/tv/...             the kumapie-tv app's API (Android TV, whole episodes scene by scene): see tv.py
+  GET/POST /api/anilist   what kumapie's watched episodes would change on the AniList list / change it (anilist.py)
   POST /api/nicosweg      {"prog", "t"}: Nicos Weg progress merged across Pedro's devices (nicosweg_sync)
   /api/sync/...           episodes made on phones/tablets, kept here for the person's other devices: see sync.py
 
@@ -54,6 +55,7 @@ import personal  # noqa: E402
 import jobs  # noqa: E402
 import stremio  # noqa: E402
 import anki  # noqa: E402
+import anilist  # noqa: E402
 import voice  # noqa: E402
 
 F = cfg.raw["feed"]
@@ -173,6 +175,10 @@ def background():
             tv.synced(force=True)  # new or changed .kumapie.json files, here so no request waits on the scan
         except Exception as e:
             log(f"library scan failed: {e}")
+        try:
+            anilist.changed(tv, log)  # what was watched since, on the person's AniList list
+        except Exception as e:
+            log(f"anilist: {e}")
         time.sleep(60)
 
 
@@ -391,6 +397,11 @@ class Handler(BaseHTTPRequestHandler):
             if m[1] not in sync.PEOPLE:
                 return self.send_error(404)
             return self.send_json(stremio.manifest(m[1]) if m[2] == "manifest.json" else stremio.streams(m[1], m[3], m[4]))
+        if path == "/api/anilist":  # what POST would change on the AniList list (anilist.py)
+            try:
+                return self.send_json(anilist.plan(tv))
+            except (ValueError, OSError) as e:  # AniList unreachable, or the list is private
+                return self.send_json({"error": str(e)[:200]})
         if path == "/api/models/ja-dicts" or path.startswith("/api/models/ja-dicts/"):
             d = (cfg.state / "dicts" / JA_DICTS).resolve()
             if path == "/api/models/ja-dicts":
@@ -593,6 +604,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(stremio.prepare(tv, json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")))
             except (ValueError, OSError) as e:  # OSError: Torrentio or Real-Debrid unreachable; the TV shows the reason
                 return self.send_json({"state": "failed", "step": "", "error": str(e)[:200]})
+        if path == "/api/anilist":
+            try:
+                return self.send_json(anilist.sync(tv, log))
+            except (ValueError, OSError) as e:
+                return self.send_json({"error": str(e)[:200]})
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
                         "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark", "/api/tv/personal"):
             return self.send_error(404)

@@ -92,3 +92,9 @@ de-en = "state/dicts/wty-de-en.zip"
 en-en = "state/dicts/wty-en-en.zip"
 en-es = "state/dicts/wty-en-es.zip"
 ja-en = "state/dicts/jitendex-yomitan.zip"
+
+# Episodes watched in kumapie raise the progress on this AniList list (services/feed/anilist.py; token: ANILIST_TOKEN
+# in .env). Bee's Character Dictionary is made from the list. Empty user = off.
+[anilist]
+user = ""
+libraries = ["pedro-ja"]
