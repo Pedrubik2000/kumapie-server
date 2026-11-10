@@ -21,11 +21,13 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   POST /api/nicosweg      {"prog", "t"}: Nicos Weg progress merged across Pedro's devices (nicosweg_sync)
   /api/sync/...           episodes made on phones/tablets, kept here for the person's other devices: see sync.py
 
-Binds 127.0.0.1: Tailscale Serve publishes it on HTTPS 8445 (tailnet only, never Funnel).
+Tailscale Serve publishes it on HTTPS 8445 (tailnet only, never Funnel). It listens on every address, but answers
+only 127.0.0.1 (Tailscale Serve), plus an episode's video to the home network (the TVs: Tailscale is too slow there).
 """
 import asyncio
 import hashlib
 import shutil
+import socket
 import json
 import mimetypes
 import os
@@ -348,7 +350,26 @@ def nicosweg_sync(body):
     return have
 
 
+def lan_url() -> str:
+    """This PC on the home network ("" without one): the TVs fetch an episode's video there, not through Tailscale
+    (the Chromecast got ~24 Mbit/s through it, 113 on plain Wi-Fi: Blu-ray-size episodes stalled, 2026-11-09)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            return f"http://{s.getsockname()[0]}:{PORT}"
+    except OSError:
+        return ""
+
+
 class Handler(BaseHTTPRequestHandler):
+    def parse_request(self):
+        # Everything comes through Tailscale Serve (from 127.0.0.1). Straight from the home network: an episode's video only.
+        ok = super().parse_request()
+        if ok and self.client_address[0] != "127.0.0.1" and not (self.command == "GET" and re.match(r"/api/tv/video/[\w-]+$", self.path)):
+            self.send_error(403)
+            return False
+        return ok
+
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
         path = urllib.parse.unquote(url.path)
@@ -446,7 +467,7 @@ class Handler(BaseHTTPRequestHandler):
     def tv_get(self, path, person=None):
         status = status_of
         if path == "/api/tv":
-            return self.send_json(tv.info())
+            return self.send_json(tv.info() | {"lan": lan_url()})
         if path == "/api/tv/shows":
             return self.send_json(tv.shows(status, person))
         if path == "/api/tv/stats":
@@ -664,6 +685,6 @@ if __name__ == "__main__":
     tv = TV(segments, os.environ.get("FFMPEG") or shutil.which("ffmpeg") or "ffmpeg")
     reload()
     threading.Thread(target=background, daemon=True).start()
-    log(f"dojo-feed on http://127.0.0.1:{PORT}")
+    log(f"dojo-feed on http://127.0.0.1:{PORT}, videos on {lan_url() or 'no LAN'}")
     restart_on_change(Path(__file__).parent, log=log)  # new code -> exit, NSSM starts it again (no admin needed)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    ThreadingHTTPServer(("", PORT), Handler).serve_forever()
