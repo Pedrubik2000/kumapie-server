@@ -163,7 +163,7 @@ def status_of(key):
     """A person's known words: what their phone sent, plus (the feed person) the words marked known on the TV.
     None when their phone never sent any (the TV then shows their episodes plain)."""
     ws = known.words(key)
-    if key != F["person"]:
+    if key not in tv.marks_people() or (ws is None and key != F["person"]):
         return ws
     return frozenset(ws or ()) | tv.known_words()
 

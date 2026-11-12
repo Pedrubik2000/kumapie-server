@@ -554,7 +554,7 @@ class TV:
             looked = dict(db.execute("select word, count(*) from lookups where person = ? group by word", (ep["person"],)))
         status = status_of(ep["person"])
         fits = self.scene_senses(ep)
-        marked = self.known_words() if ep["person"] == F["person"] else set()
+        marked = self.known_words() if ep["person"] in self.marks_people() else set()
         theirs = status is None  # their phone never sent its known words: plain on the TV
         if theirs:
             status = frozenset(ep["infl"])
@@ -733,6 +733,12 @@ class TV:
                     if w.strip() and not w.startswith("#")}
         except FileNotFoundError:
             return set()
+
+    @staticmethod
+    def marks_people() -> set[str]:
+        """The libraries the marked words count in: the feed person's, in every language (one file; 見る marked on a
+        pedro-ja episode came back unmarked, user 2026-11-12)."""
+        return next((set(libs.values()) for libs in sync.PEOPLE.values() if F["person"] in libs.values()), {F["person"]})
 
     def mark_known(self, word: str, known: bool) -> None:
         """Adds or removes the word in the known-words file (marked known on the TV)."""
