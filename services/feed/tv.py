@@ -410,6 +410,14 @@ class TV:
                     db.execute("insert or replace into progress values (?, 0, ?)", (ep["id"], now))
         return {"ok": True, "episodes": len(eps)}
 
+    @staticmethod
+    def counts(ep: dict, seen) -> dict:
+        """An episode's scenes and how many were seen, without the lyrics of its opening and ending (every line "♪ ...",
+        kumapie's Scene.song): skipping the songs must not keep an episode unwatched."""
+        said = {sc["id"] for sc in ep["scenes"]
+                if not (sc["cues"] and all(c["seg"] and c["seg"][0][0].startswith("♪") for c in sc["cues"]))}
+        return {"scenes": len(said), "seen": len(said & set(seen))}
+
     def shows(self, status_of, person: str | None = None) -> dict:
         """[status_of]: a library person's known words (None: their phone never sent any)."""
         self.synced()
@@ -418,7 +426,7 @@ class TV:
             resume = dict(db.execute("select episode, pos from progress"))
             resumed = {e: int(datetime.datetime.fromisoformat(u).timestamp())  # Continue watching: newest first
                        for e, u in db.execute("select episode, updated from progress") if u}
-            seen = {e: len(s) for e, s in self.seen_scenes(db).items()}
+            seen = self.seen_scenes(db)
         shows: dict[str, dict] = {}
         for ep in sorted(self.episodes.values(), key=lambda e: (e["season"] or 0, e["episode"] or 0, e["source"])):
             if ep["person"] not in people or ep["kind"] == "stream":  # a stream's URL is NuvioTV's, gone after it
@@ -432,7 +440,7 @@ class TV:
             sh["episodes"].append({
                 "id": ep["id"], "title": ep["title"], "season": ep["season"], "episode": ep["episode"],
                 "duration": ep["duration"], "thumb": f"/api/tv/thumb/{ep['id']}.jpg",
-                "scenes": len(ep["scenes"]), "seen": seen.get(ep["id"], 0), "resume": resume.get(ep["id"]), "resumed_at": resumed.get(ep["id"], 0),
+                **self.counts(ep, seen.get(ep["id"], ())), "resume": resume.get(ep["id"]), "resumed_at": resumed.get(ep["id"], 0),
                 "easy": sum(1 for lv in levels if lv <= 1)})  # scenes at i+0 / i+1 today
         self.fill_meta()
         lang = self.speaks(people)

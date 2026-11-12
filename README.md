@@ -14,6 +14,7 @@ tools that fill it. Runs on the Windows PC in `C:\dojo\kumapie-server`; media in
 | `services\feed\jobs.py` | episodes made on the PC for kumapie: AniWorld, YouTube, TikTok, Real-Debrid, uploaded files |
 | `tools\feed\feed.py` | German feed clips, scenes and glosses (`tools\feed\README.md`) |
 | `tools\kumapie\pc_episodes.py` | library videos -> kumapie episodes |
+| `tools\kumapie\lyrics.py` | Japanese anime: the opening's and ending's lyrics into the `.srt` (Jimaku's song lines, else LRCLIB, placed by what Parakeet hears) |
 | `tools\kumapie\ja_words.py`, `jiten_split.ps1`, `jiten_lexicon.py` | Japanese words with the phones' own splitter |
 | `pipeline\srt_spaced.py`, `parakeet.py` | transcript JSON -> `.srt`; free CPU transcription |
 | `dojo\` | `config.toml` + `.env` loader, self-restart on code changes |

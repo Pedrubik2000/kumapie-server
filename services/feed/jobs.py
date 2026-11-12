@@ -200,7 +200,7 @@ def _safe(name: str) -> str:
 
 
 def _start(cmd, **kw) -> subprocess.Popen:
-    p = subprocess.Popen([str(c) for c in cmd], env=ENV, stdin=subprocess.DEVNULL, **kw)
+    p = subprocess.Popen([str(c) for c in cmd], stdin=subprocess.DEVNULL, **{"env": ENV, **kw})
     _contain(p)  # ends with the server; what it starts later (aniworld.exe's ffmpeg) is in the job too
     return p
 
@@ -509,6 +509,11 @@ def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str
     if not (folder / f"{stem}.srt").exists():
         job["step"] = prefix + f"{stem}: transcribing (Parakeet)"
         _transcribe(folder, stem, lang)
+    if lang == "ja" and kind == "anime":
+        # The opening's and ending's lyrics into the .srt (tools\kumapie\lyrics.py). Never the episode's failure.
+        job["step"] = prefix + f"{stem}: lyrics"
+        _run([cfg.python, cfg.code / "tools" / "kumapie" / "lyrics.py", "--for", job["key"], video], check=False,
+             env={**ENV, "JIMAKU_API_KEY": job["jimaku"] or os.environ.get("JIMAKU_API_KEY", "")})
     job["episodes"].append(stem)
     return video
 
