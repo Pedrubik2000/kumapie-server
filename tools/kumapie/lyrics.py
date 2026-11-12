@@ -361,7 +361,11 @@ def main() -> None:
             continue
         print(video.stem, flush=True)
         try:
-            if add(video, key):  # the episode again from its .srt, at once: a run that stops leaves none half done
+            # The episode again from its .srt, at once. Also one whose .srt got its lyrics in a run where that failed
+            # (the splitter builds kumapie's :lang; 5 of Precure's failed while another session's edit didn't compile).
+            sung = any(c[2].startswith("♪") for c in read_srt(video.with_suffix(".srt")))
+            behind = sung and made.exists() and not any(_song(sc) for sc in json.loads(made.read_text(encoding="utf-8"))["scenes"])
+            if add(video, key) or behind:
                 rebuild(video, a.person)
                 done.append(video)
         except Exception as e:  # noqa: BLE001 - one episode's trouble (a download, Parakeet) doesn't stop the others
