@@ -11,6 +11,10 @@ the PC with none. The PC fills them from these dictionaries: config.toml [kumapi
 A meaning is the dictionary's first senses joined, short (the TV card's "word = gloss" style): the general meaning.
 Each row also keeps up to KEEP senses and the kana reading, so an episode can give each scene the sense that fits
 its English (`senses` + `best`, like the phone's SensePick) and the TV can show the reading (user, 2026-10-14).
+
+English Wiktionary (kaikki.org's dump, state\\dicts\\kaikki-en.jsonl) fills what the wty en-es zip lacks: phrasal verbs,
+rarer words, Spanish translations. `build` stores its translations as the pair "en-es~wikt" (same table) and its
+form-of entries ("took" -> "take") in `forms`; `look`/`senses` try them only when the main pair has no answer.
 """
 from __future__ import annotations
 
@@ -28,7 +32,10 @@ from dojo import cfg  # noqa: E402
 DB = cfg.state / "feed" / "dicts.db"
 SENSES = 3        # senses joined into one meaning
 KEEP = 12         # senses kept for picking the one that fits a scene
-MAX_LEN = 90      # characters, cut at a sense boundary when possible
+KAIKKI = cfg.state / "dicts" / "kaikki-en.jsonl"  # https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl (3.4 GB)
+FALLBACK = {"en-es": "en-es~wikt"}  # pair -> the pair tried when it has no answer (and for its words' form-of bases)
+PER_SENSE = 4     # Spanish words kept per translation sense
+MAX_LEN = 90     # characters, cut at a sense boundary when possible
 SKIP = {"preamble", "tags", "tag", "backlink", "attribution", "part-of-speech-info", "example-sentence", "extra-info",
         "related-words", "info-gloss", "forms", "xref", "antonym", "references", "notes"}
 
@@ -91,6 +98,48 @@ def join(senses: list[str]) -> str:
     return text if len(text) <= MAX_LEN + 30 else text[:MAX_LEN].rstrip(" ,;") + "…"
 
 
+def _kaikki(path: Path) -> tuple[list, list]:
+    """Stream the dump: ([(word, [Spanish words per sense])], [(form, base)]). Translations sit on the entry and/or its senses."""
+    out: dict[str, dict[str, list[str]]] = {}  # word -> translation sense label -> Spanish words, in the entry's order
+    forms: list[tuple[str, str]] = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if '"es"' not in line and '"form_of"' not in line and '"alt_of"' not in line:
+                continue  # ponytail: assumes the dump's default JSON spacing (`"code": "es"`)
+            d = json.loads(line)
+            word = d["word"]
+            tr = list(d.get("translations") or []) + [t for s in d.get("senses", []) for t in s.get("translations") or []]
+            got = False
+            for t in tr:
+                w = (t.get("word") or "").strip()
+                if (t.get("code") or t.get("lang_code")) != "es" or not w or "please add" in (w + t.get("sense", "")).lower():
+                    continue
+                ws = out.setdefault(word, {}).setdefault((t.get("sense") or "").strip(), [])
+                if w not in ws:
+                    ws.append(w)
+                got = True
+            if not got:
+                for s in d.get("senses", []):
+                    base = ((s.get("form_of") or s.get("alt_of") or [{}])[0]).get("word")
+                    if base and base != word:
+                        forms.append((word, base))
+                        break
+    rows = [(w, list(dict.fromkeys(", ".join(ws[:PER_SENSE]) for ws in by_sense.values()))) for w, by_sense in out.items()]
+    return rows, forms
+
+
+def _add_kaikki(db: sqlite3.Connection, pair: str) -> None:
+    if not KAIKKI.is_file():
+        print(f"{pair}: no {KAIKKI}, fallback skipped", flush=True)
+        return
+    rows, forms = _kaikki(KAIKKI)
+    db.executemany("insert into m values (?,?,0,0,?,?,'')",
+                   ((pair, w, join(ss[:SENSES]), json.dumps(ss[:KEEP], ensure_ascii=False)) for w, ss in rows))
+    db.execute("create table forms (key text primary key, base text)")
+    db.executemany("insert or ignore into forms values (?,?)", forms)  # the first entry's base wins
+    print(f"{pair}: {len(rows)} words, {len(forms)} form-of entries from {KAIKKI.name}", flush=True)
+
+
 def build() -> None:
     DB.parent.mkdir(parents=True, exist_ok=True)
     tmp = DB.with_suffix(".tmp")
@@ -115,6 +164,8 @@ def build() -> None:
                        ((pair, k, r, sc, join(ss[:SENSES]), json.dumps(list(dict.fromkeys(ss)), ensure_ascii=False), kana)
                         for (k, r), (sc, ss, kana) in terms.items()))
         print(f"{pair}: {len(terms)} keys from {rel}", flush=True)
+    for fb in FALLBACK.values():
+        _add_kaikki(db, fb)
     db.execute("create index m_key on m (pair, key)")
     db.commit()
     db.close()
@@ -122,50 +173,73 @@ def build() -> None:
 
 
 _cache: dict[tuple[str, str], str] = {}
+_scache: dict[tuple[str, str], tuple[str, list[str]]] = {}
+_bcache: dict[str, str] = {}
 _lock = threading.Lock()
 _db: sqlite3.Connection | None = None
 
 
+def _conn() -> sqlite3.Connection | None:
+    """The one read-only connection shared by the server's threads (call with _lock held)."""
+    global _db
+    if _db is None and DB.is_file():
+        _db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, check_same_thread=False)
+    return _db
+
+
+def _base(key: str) -> str:
+    """The word [key] is a form of ("took" -> "take"); "" when none (or a dicts.db without forms: `build` again)."""
+    if key not in _bcache:
+        try:
+            row = _db.execute("select base from forms where key = ?", (key,)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        _bcache[key] = row[0] if row else ""
+    return _bcache[key]
+
+
+def _cands(pair: str, keys: tuple, variants: bool):
+    """(pair, key) to try in order: the pair, then its fallback, then both for the keys' form-of base words."""
+    ks = [k for key in dict.fromkeys(k for k in keys if k)
+          for k in (dict.fromkeys((key, key.lower(), key[:1].upper() + key[1:])) if variants else (key,))]
+    fb = FALLBACK.get(pair)
+    pairs = [p for p in (pair, fb) if p]
+    yield from ((p, k) for p in pairs for k in ks)
+    if fb:
+        bases = list(dict.fromkeys(filter(None, map(_base, ks))))
+        yield from ((p, b) for p in pairs for b in bases)
+
+
 def look(pair: str, *keys: str) -> str:
     """The meaning of the first key found (a word's dictionary form, then the form in the line); "" when none."""
-    global _db
-    with _lock:  # one read-only connection shared by the server's threads
-        if _db is None:
-            if not DB.is_file():
-                return ""
-            _db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, check_same_thread=False)
-        for key in dict.fromkeys(k for k in keys if k):
-            for k in dict.fromkeys((key, key.lower(), key[:1].upper() + key[1:])):  # German nouns, sentence starts
-                if (pair, k) not in _cache:
-                    row = _db.execute("select gloss from m where pair = ? and key = ? order by reading, score desc limit 1",
-                                      (pair, k)).fetchone()
-                    _cache[(pair, k)] = row[0] if row else ""
-                if _cache[(pair, k)]:
-                    return _cache[(pair, k)]
+    with _lock:
+        if not _conn():
+            return ""
+        for p, k in _cands(pair, keys, True):  # German nouns, sentence starts: key, lower, Capitalized
+            if (p, k) not in _cache:
+                row = _db.execute("select gloss from m where pair = ? and key = ? order by reading, score desc limit 1",
+                                  (p, k)).fetchone()
+                _cache[(p, k)] = row[0] if row else ""
+            if _cache[(p, k)]:
+                return _cache[(p, k)]
     return ""
-
-
-_scache: dict[tuple[str, str], tuple[str, list[str]]] = {}
 
 
 def senses(pair: str, *keys: str) -> tuple[str, list[str]]:
     """The kana reading and the senses of the first key found; ("", []) when none (or a dicts.db built before them)."""
-    global _db
     with _lock:
-        if _db is None:
-            if not DB.is_file():
-                return "", []
-            _db = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, check_same_thread=False)
-        for key in dict.fromkeys(k for k in keys if k):
-            if (pair, key) not in _scache:
+        if not _conn():
+            return "", []
+        for p, k in _cands(pair, keys, False):
+            if (p, k) not in _scache:
                 try:
                     row = _db.execute("select kana, senses from m where pair = ? and key = ? order by reading, score desc limit 1",
-                                      (pair, key)).fetchone()
+                                      (p, k)).fetchone()
                 except sqlite3.OperationalError:  # no senses column yet: `build` again
                     row = None
-                _scache[(pair, key)] = (row[0] or "", json.loads(row[1] or "[]")) if row else ("", [])
-            if _scache[(pair, key)][1]:
-                return _scache[(pair, key)]
+                _scache[(p, k)] = (row[0] or "", json.loads(row[1] or "[]")) if row else ("", [])
+            if _scache[(p, k)][1]:
+                return _scache[(p, k)]
     return "", []
 
 
@@ -200,7 +274,14 @@ if __name__ == "__main__":
     assert best(["to take, to pick up", "to pass, to hand, to give", "to pick, to gather, to harvest"],
                 "Give me a break! We were out gathering materials.") == "to pick, to gather, to harvest"
     assert best(["to take", "to pass, to give"], "Give me a break!") is None
-    if sys.argv[1:2] == ["build"]:
+    if sys.argv[1:2] == ["test"]:  # needs a built dicts.db (with kaikki-en.jsonl)
+        for w in ("windshield", "stickler", "classy", "discrepancy", "come on", "pick up", "take off", "figure out"):
+            assert look("en-es", w), w
+        assert look("en-es", "got", "got") == look("en-es", "get") != ""
+        assert look("en-es", "took") and _base("paralegals") == "paralegal"  # (no Spanish for paralegal anywhere)
+        assert "Ir." in look("en-es", "go") and look("en-es", "go out") == "Salir."  # wty wins
+        print("ok")
+    elif sys.argv[1:2] == ["build"]:
         build()
     elif sys.argv[1:2] == ["look"]:
         print(look(sys.argv[2], *sys.argv[3:]) or "(none)")
