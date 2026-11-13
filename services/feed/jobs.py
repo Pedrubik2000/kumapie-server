@@ -164,6 +164,8 @@ def submit(body: dict) -> dict:
            "season": int(body.get("season") or 0), "number": int(body.get("number") or 0),
            # stremio.py: a better copy of an episode already there (old files archived once the new one is down), and
            # the file it's made from ("hash|name", emptied when the episode was there already and nothing was made).
+           # stremio.py, an IMDb id ("tt123" or "tt123:1:2"): Spanish subtitles for the line under English words.
+           "imdb": str(body.get("imdb") or "") if re.fullmatch(r"tt\d+(:\d+:\d+)?", str(body.get("imdb") or "")) else "",
            "replace": bool(body.get("replace")), "pick": str(body.get("pick") or ""),
            "state": "queued", "step": "", "error": "", "episodes": []}
     jobs.insert(0, job)
@@ -455,6 +457,67 @@ def _jimaku(job: dict, video: Path, show: str, season, number, name: str, tmp: P
     return (_snap(cues, json.loads(jimaku.cues(str(english), "en"))) if english else cues), found.get("anilist")
 
 
+OPENSUBS = "https://opensubtitles-v3.strem.io/subtitles"  # Stremio's public add-on, no key
+OS_LANGS = {"es": ("spa", "spl", "spn", "ea")}  # translation code -> OpenSubtitles' codes (Spain, Latin America, ...)
+AD_LINE = re.compile(r"opensubtitles|subtitles? (by|downloaded)|subt[ií]tulos? (por|by)|subtitulos? (por|by)|"
+                     r"www\.|\.(com|org|net)\b|\bsync(ed)? (and|&) corrected|\btraducci[oó]n|\bcorrecci[oó]n", re.I)
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _opensubs(imdb: str, translation: str, ref: Path, name: str, tmp: Path, say=print):
+    """Subtitles in [translation] for a title ("tt123" / "tt123:1:2") from Stremio's OpenSubtitles add-on, fitted with
+    alass to [ref] (the video's English .srt) -> cues, or None (every miss is said, never raised). Up to 4 files, the
+    ones from the video's own release first (its group and source in the file name), the one alass moves least."""
+    langs = OS_LANGS.get(translation)
+    if not langs:
+        return None
+    try:
+        req = urllib.request.Request(f"{OPENSUBS}/{'series' if ':' in imdb else 'movie'}/{imdb}.json", headers={"User-Agent": "kumapie"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            subs = [s for s in json.load(r).get("subtitles", []) if s.get("lang") in langs and s.get("url")]
+    except (OSError, ValueError) as e:
+        say(f"opensubtitles {imdb}: {e}")
+        return None
+    mine, group = _words(name), re.search(r"-([a-z0-9]+)(?:\.\w+)?$", name.lower())
+    def score(s):  # the release's words in common, its group (the name's "-RARBG") counting double
+        rel = _words(f"{s.get('movieReleaseName') or ''} {s.get('subtitleFileName') or ''}")
+        return len(mine & rel) + 2 * bool(group and group[1] in rel), -langs.index(s["lang"])
+    subs.sort(key=score, reverse=True)
+    say(f"opensubtitles {imdb}: {len(subs)} {translation} files ({', '.join(sorted({s['lang'] for s in subs}))})")
+    fits = []
+    for i, s in enumerate(subs[:4]):
+        try:
+            raw, fitted = tmp / f"os{i}.srt", tmp / f"osfit{i}.srt"
+            with urllib.request.urlopen(urllib.request.Request(s["url"], headers={"User-Agent": "kumapie"}), timeout=60) as r:
+                raw.write_bytes(r.read())
+            cues = [c for c in json.loads(jimaku.cues(str(raw), translation)) if not AD_LINE.search(c[2])]
+            if len(cues) < 50:
+                continue
+            _srt(cues, raw)  # ads out, then fitted
+            moved = _fit(ref, raw, fitted)
+        except Exception as e:  # noqa: BLE001 - a bad file: the next one
+            say(f"opensubtitles {s.get('subtitleFileName') or s['id']}: {str(e)[:100]}")
+            continue
+        fits.append((moved, i, fitted, s))
+        say(f"opensubtitles {s.get('subtitleFileName') or s['id']} ({s['lang']}): moved {moved:.2f} s")
+        if moved < 1:
+            break  # already timed to this video
+    if not fits:
+        return None
+    best = min(fits, key=lambda f: f[:2])
+    say(f"opensubtitles: kept {best[3].get('subtitleFileName') or best[3]['id']} (moved {best[0]:.2f} s)")
+    return json.loads(jimaku.cues(str(best[2]), translation))
+
+
+def _say(text: str) -> None:
+    print(text, flush=True)
+    with open(LOG, "a", encoding="utf-8") as log:
+        log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}" + chr(10))
+
+
 def _snap(cues: list, english: list) -> list:
     """Japanese cues moved onto the video's own English ones: each by the median gap from the Japanese starts within
     60 s to their nearest English start. alass left Apothecary Diaries 01 and 22 ~1 s late and 14-24 0.2-0.5 s early
@@ -478,6 +541,8 @@ def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str
     show, season, number = job["show"] or about["show"] or Path(name).stem, about["season"], about["number"]
     if job["number"]:  # stremio.py knows which episode it is: not the file name's guess
         season, number = job["season"] or None, job["number"]
+    elif job.get("imdb") and ":" not in job["imdb"]:  # a movie from the add-on: no episode, whatever the file's name says
+        season = number = None
     # Subtitles inside an MKV are made for this very video.
     subs = {}
     if src.suffix.lower() == ".mkv":
@@ -509,6 +574,12 @@ def _local(job: dict, src: Path, name: str, single: bool, tmp: Path, prefix: str
     if not (folder / f"{stem}.srt").exists():
         job["step"] = prefix + f"{stem}: transcribing (Parakeet)"
         _transcribe(folder, stem, lang)
+    if job.get("imdb") and translation != lang and not (folder / f"{stem}.{translation}.srt").exists():
+        # English words: the line under them from OpenSubtitles when the file had none (fitted to the .srt just made).
+        job["step"] = prefix + f"{stem}: {translation} subtitles"
+        cues = _opensubs(job["imdb"], translation, folder / f"{stem}.srt", name, tmp, _say)
+        if cues:
+            _srt(cues, folder / f"{stem}.{translation}.srt")
     if lang == "ja" and kind == "anime":
         # The opening's and ending's lyrics into the .srt (tools\kumapie\lyrics.py). Never the episode's failure.
         job["step"] = prefix + f"{stem}: lyrics"
@@ -528,10 +599,10 @@ def _rd(job: dict, tmp: Path) -> None:
             # An episode named by stremio.py (show, season, number) that's already in the library isn't downloaded again,
             # unless it's being replaced by a better copy.
             old = None
-            if job["show"] and job["number"]:
+            if job["show"] and (job["number"] or job.get("imdb") and ":" not in job["imdb"]):
                 kind = job["type"] or ("anime" if job["lang"] == "ja" else "shows")
                 folder = _show_dir(cfg.library(job["key"]) / kind, _ascii(job["show"]))
-                stem = f"{folder.name}_s{job['season'] or 1}_{job['number']:02}"
+                stem = f"{folder.name}_s{job['season'] or 1}_{job['number']:02}" if job["number"] else folder.name
                 if (folder / f"{stem}.kumapie.json").exists():
                     if not job.get("replace"):
                         job["episodes"].append(stem)

@@ -292,6 +292,7 @@ def meta(type_: str, sid: str) -> dict:
         run = str(m.get("runtime") or next((v.get("runtime") for v in m.get("videos") or [] if v.get("runtime")), ""))
         h, mins = re.search(r"(\d+)\s*h", run), re.search(r"(\d+)\s*m", run) or re.fullmatch(r"\s*(\d+)\s*", run)
         _metas[base] = {"name": m.get("name") or base, "episodes": eps, "names": [m.get("name") or ""] + (m.get("aliases") or []),
+                        "year": (re.search(r"\d{4}", str(m.get("year") or m.get("releaseInfo") or "")) or [""])[0],
                         "minutes": (int(h[1]) * 60 if h else 0) + (int(mins[1]) if mins else 0)}
     return _metas[base]
 
@@ -344,6 +345,12 @@ def _queue(base: str, person: str, lang: str, type_: str, sids: list[str], q: st
                 stand[sid]["step"] = text
             try:
                 about_ = meta(type_, sid) if type_ == "series" else {"name": ""}
+                if type_ == "movie" and sid.startswith("tt"):  # a movie's folder is its title + year too
+                    try:
+                        about_ = meta(type_, sid)
+                    except (OSError, ValueError):
+                        pass
+                show = f"{about_['name']} {about_['year']}".strip() if sid.startswith("tt") and about_.get("year") else about_["name"]
                 season, number = numbers(sid)
                 if i == 0 and first:
                     c = first
@@ -355,7 +362,8 @@ def _queue(base: str, person: str, lang: str, type_: str, sids: list[str], q: st
                     c = ranked(found, _minutes(type_, sid), last)[0]
                 link = _rd_link(token, c["hash"], c["file"], c["idx"], step)
                 last = c["hash"]
-                got = jobs.submit({"person": person, "lang": lang, "url": link, "rd": token, "show": about_["name"],
+                got = jobs.submit({"person": person, "lang": lang, "url": link, "rd": token, "show": show,
+                                   "imdb": sid if sid.startswith("tt") else "",
                                    "jimaku": os.environ.get("JIMAKU_API_KEY", "") if lang == "ja" else "",
                                    "type": "anime" if sid.startswith("kitsu:") else "movies" if type_ == "movie" else "shows",
                                    "season": season or 0, "number": number or 0,
