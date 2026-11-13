@@ -561,6 +561,8 @@ class TV:
         return {
             "id": eid, "show": ep["show_title"], "title": ep["title"], "duration": ep["duration"],
             "lang": LANG.get(ep["person"], PERSON.transcript), "novel": ep.get("novel", False),
+            # The show's Japanese title (AniList): kumapie puts faces only on this work's characters.
+            "work": ((self.show_meta(ep["show"]) or {}).get("title") or {}).get("ja", ""),
             "video": f"/api/tv/video/{eid}", "resume": row[0] if row else None,
             "scenes": [{"id": sc["id"], "i": sc["i"], "start": sc["start"], "end": sc["end"],
                         "german": sc["german"], "level": self.level(sc, status) if sc["german"] and not theirs else None,
