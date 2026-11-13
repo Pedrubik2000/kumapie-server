@@ -66,6 +66,10 @@ pedro = { de = "pedro-de", en = "pedro-en", ja = "pedro-ja" }
 alice = { en = "alice" }
 bob = { en = "bob" }
 
+[srs]
+# library keys whose word cards live on the PC (kumapie TV without kuma3): services/feed/srs.py
+people = []
+
 [aniworld]
 # Episodes made on the PC for kumapie (POST /api/aniworld, services\feed\jobs.py): AniWorld / s.to dubs, and YouTube,
 # TikTok, Real-Debrid links and video files when the phone says "Make it on: the PC". Downloads, subtitles or Parakeet

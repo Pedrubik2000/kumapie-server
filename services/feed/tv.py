@@ -25,6 +25,13 @@ state\\feed\\tv.db (resume point per episode, scenes seen, seconds watched per d
   GET  /api/tv/poster/<show>.jpg     the show's cover (cover.jpg/poster.jpg); 404 without one (the apps draw a neutral poster)
   POST /api/tv/progress              {"episode", "pos", "seen": [scene ids], "watched": seconds}
   POST /api/tv/lookup                {"word": inflection, "scene": id}: a word looked up in the picker
+  POST /api/tv/srs/add     {"scene", "line": cue index, "word", "meaning"}: mine a word into the person's PC cards (srs.py,
+                                     config [srs] people) -> {"c": "b"}; /srs/rate {"scene" | "person"+"lang", "word",
+                                     "rating": 1..4} -> {"c", "today"}; /srs/undo {"scene" | "person"+"lang"} -> {"word", "c"}
+  GET  /api/tv/srs/due?person=&lang=  {"due", "new", "today", "cards": [{"word", "sentence", "translation", "meaning", "c",
+                                     "audio"}]}; GET /api/tv/srs/audio?person=&lang=&word=: the line's mp3 from the video.
+                                     /api/tv/episode for an srs person: "srs": true, words get "c" (b/d/k); /known with a
+                                     "scene" of an srs person marks in their srs list -> {"s"}
   POST /api/tv/known                 {"word": inflection, "known": true|false}: mark a word known without a
                                      card (state\\morphs\\<person>-known-words.txt, which morphs recalc reads
                                      too) or undo it; answers the word's new status
@@ -57,6 +64,7 @@ from pathlib import Path
 from dojo import cfg
 import dicts
 import known
+import srs
 import sync
 import sys
 sys.path.insert(0, str(cfg.kumapie_app / "mobile" / "src" / "main" / "python"))
@@ -554,13 +562,18 @@ class TV:
             looked = dict(db.execute("select word, count(*) from lookups where person = ? group by word", (ep["person"],)))
         status = status_of(ep["person"])
         fits = self.scene_senses(ep)
-        marked = self.known_words() if ep["person"] in self.marks_people() else set()
-        theirs = status is None  # their phone never sent its known words: plain on the TV
+        on = srs.enabled(ep["person"])  # cards on the PC (config [srs]): never plain
+        cards, srs_marked = srs.words_info(ep["person"]) if on else ({}, set())
+        marked = srs_marked if on else self.known_words() if ep["person"] in self.marks_people() else set()
+        theirs = status is None and not on  # their phone never sent its known words: plain on the TV
         if theirs:
             status = frozenset(ep["infl"])
+        elif on:
+            status = srs.known(ep["person"])
         return {
             "id": eid, "show": ep["show_title"], "title": ep["title"], "duration": ep["duration"],
             "lang": LANG.get(ep["person"], PERSON.transcript), "novel": ep.get("novel", False),
+            **({"srs": True} if on else {}),
             # The show's Japanese title (AniList): kumapie puts faces only on this work's characters.
             "work": ((self.show_meta(ep["show"]) or {}).get("title") or {}).get("ja", ""),
             "video": f"/api/tv/video/{eid}", "resume": row[0] if row else None,
@@ -576,8 +589,9 @@ class TV:
                            if sc.get("base") else {})}
                        for sc in ep["scenes"]],
             # s: k/u, g: meaning, lemma: dictionary form, n: times looked up, m: marked known on the TV
+            # srs people also get c: card state b/d/k (their cards live on the PC, srs.py)
             "words": {i: {"s": "k" if i in status else "u", "g": g, "lemma": self.lemmas.get(i, ""),
-                          "n": looked.get(i, 0), "m": i in marked, **self.reading(ep, i)}
+                          "n": looked.get(i, 0), "m": i in marked, **({"c": cards[i]} if i in cards else {}), **self.reading(ep, i)}
                       for i, g in ep["gloss"].items()},
         }
 
@@ -755,6 +769,27 @@ class TV:
                            + "".join(f"{w}\n" for w in sorted(words)), encoding="utf-8")
             tmp.replace(KNOWN_WORDS)
 
+    def srs_key(self, body: dict) -> str:
+        """The srs library key of a request's scene (or person + lang); ValueError when it isn't an srs person's."""
+        self.synced()
+        scene = body.get("scene")
+        if scene is not None:
+            ep = next((e for e in self.episodes.values() if any(sc["id"] == scene for sc in e["scenes"])), None)
+            key = ep["person"] if ep else None
+        else:
+            key = sync.PEOPLE.get(str(body.get("person")), {}).get(str(body.get("lang")))
+        if not key or not srs.enabled(key):
+            raise ValueError("unknown scene or person")
+        return key
+
+    def srs_add(self, body: dict) -> dict:
+        key = self.srs_key(body)
+        ep = self.episodes[self.person_ep(body["scene"])]
+        return srs.add(key, ep, body["scene"], body.get("line"), body.get("word"), body.get("meaning"))
+
+    def person_ep(self, scene: str) -> str:
+        return next(e["id"] for e in self.episodes.values() if any(sc["id"] == scene for sc in e["scenes"]))
+
     def history(self, person: str | None = None) -> dict:
         """Everything the TV (and the phone, before 2026-10-06) recorded, in kumapie's progress format. Another
         person's: their episodes' positions and scenes, their time and lookups (words marked known are the feed person's)."""
@@ -847,5 +882,6 @@ class TV:
                     days[day] = days.get(day, 0) + s
             out[lang] = {"today": days.get(today.isoformat(), 0),
                          "week": sum(days.get((today - datetime.timedelta(days=i)).isoformat(), 0) for i in range(7)),
-                         "total": sum(days.values()), "known": len(known.words(key) or ())}
+                         "total": sum(days.values()),
+                         "known": len(srs.known(key) if srs.enabled(key) else known.words(key) or ())}
         return out

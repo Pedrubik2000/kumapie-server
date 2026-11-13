@@ -51,6 +51,7 @@ from tv import TV  # noqa: E402
 import dicts  # noqa: E402
 import sync  # noqa: E402
 import known  # noqa: E402
+import srs  # noqa: E402
 import personal  # noqa: E402
 import jobs  # noqa: E402
 import stremio  # noqa: E402
@@ -162,6 +163,8 @@ def reload():
 def status_of(key):
     """A person's known words: what their phone sent, plus (the feed person) the words marked known on the TV.
     None when their phone never sent any (the TV then shows their episodes plain)."""
+    if srs.enabled(key):
+        return srs.known(key)
     ws = known.words(key)
     if key not in tv.marks_people() or (ws is None and key != F["person"]):
         return ws
@@ -387,6 +390,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(known.listing(q.get("person", [None])[0], q.get("lang", [None])[0]))
             except ValueError as e:
                 return self.send_error(400, str(e))
+        if path.startswith("/api/tv/srs/"):
+            return self.srs_get(path, {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()})
         if path.startswith("/api/tv"):
             return self.tv_get(path, urllib.parse.parse_qs(url.query).get("person", [None])[0])
         if path.startswith("/api/sync/"):
@@ -473,6 +478,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(503, "kuma3 is closed")
         except (ValueError, TypeError, KeyError) as e:
             return self.send_error(400, str(e)[:200])
+        self.send_error(404)
+
+    def srs_get(self, path, q):
+        try:
+            key = tv.srs_key(q)
+            if path == "/api/tv/srs/due":
+                return self.send_json(srs.due(key, q["lang"], q["person"]))
+            if path == "/api/tv/srs/audio":
+                word = srs._word(q.get("word"))
+                c = srs._load(key)["cards"].get(word)
+                f = srs.audio(key, word, tv.video(c["episode"]) if c else None, tv.ffmpeg)
+                return self.send_file(f, "audio/mpeg", cache=False) if f else self.send_error(404)
+        except (ValueError, KeyError) as e:
+            return self.send_error(400, str(e))
         self.send_error(404)
 
     def tv_get(self, path, person=None):
@@ -610,7 +629,8 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as e:
                 return self.send_json({"error": str(e)[:200]})
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
-                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark", "/api/tv/personal"):
+                        "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark", "/api/tv/personal",
+                        "/api/tv/srs/add", "/api/tv/srs/rate", "/api/tv/srs/undo"):
             return self.send_error(404)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -630,6 +650,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(tv.mark(body))
             if path == "/api/tv/meta":
                 return self.send_json(tv.set_meta(body))
+            if path.startswith("/api/tv/srs/"):
+                key = tv.srs_key(body)
+                if path == "/api/tv/srs/add":
+                    return self.send_json(tv.srs_add(body))
+                if path == "/api/tv/srs/rate":
+                    return self.send_json(srs.rate(key, srs._word(body.get("word")), body.get("rating")))
+                return self.send_json(srs.undo(key))
+            if path == "/api/tv/known" and body.get("scene") is not None and srs.enabled(tv.person_of(scene=str(body["scene"]))):
+                done = srs.set_known(tv.person_of(scene=str(body["scene"])), str(body.get("word", "")), bool(body.get("known")))
+                reload()
+                return self.send_json(done)
             if path == "/api/tv/known":
                 return self.send_json(mark_known(str(body.get("word", "")), bool(body.get("known"))))
             if path == "/api/tv/known_words":
