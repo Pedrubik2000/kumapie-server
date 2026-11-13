@@ -64,12 +64,17 @@ def pictured(term) -> bool:
 
 
 def repoint(node, renamed: dict):
+    """Paths follow their new names; letters drawn as images (EPWING gaiji, no size given) get one em, in the text
+    colour, or chimahon draws them 100em wide and Hoshi not at all. Monochrome paints through the background layer,
+    so background stays on (off, chimahon shows nothing)."""
     if isinstance(node, list):
         for x in node:
             repoint(x, renamed)
     elif isinstance(node, dict):
         if node.get("path") in renamed:
             node["path"] = renamed[node["path"]]
+        if node.get("tag") == "img" and MARK.search(node.get("path", "")) and "width" not in node and "height" not in node:
+            node.update(width=1, height=1, sizeUnits="em", appearance="monochrome", background=True, verticalAlign="text-bottom")
         repoint(node.get("content"), renamed)
 
 
@@ -112,7 +117,10 @@ if __name__ == "__main__":
     assert Image.open(io.BytesIO(shrink(big.getvalue(), 400))).size == (400, 200)
     bank = [["犬", "いぬ", "", "", 0, [{"type": "structured-content", "content": {"tag": "img", "path": "a.png"}}]]]
     repoint(bank, {"a.png": "a.png.webp"})
-    assert bank[0][5][0]["content"]["path"] == "a.png.webp"
+    assert bank[0][5][0]["content"]["path"] == "a.png.webp" and "width" not in bank[0][5][0]["content"]
+    gaiji = {"tag": "img", "path": "media/res/font/wa54b.png"}
+    repoint(gaiji, {})
+    assert gaiji["width"] == gaiji["height"] == 1 and gaiji["sizeUnits"] == "em"
     assert pictured(bank[0]) and not pictured(["鳳", "", "", "", 0, [{"tag": "img", "path": "res/font/wa54b.png"}]])
 
     ap = argparse.ArgumentParser()
