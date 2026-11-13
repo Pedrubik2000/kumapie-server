@@ -6,10 +6,14 @@
 Every jpg/png/webp becomes a WebP no larger than --side pixels, named <old name>.webp, and the term banks point to
 the new names. Other files (gif, svg, avif, css) are copied as they are. Writes "[Pictures] <title>.zip": kumapie
 takes the popup's chip from the brackets.
+
+--pictured: for a whole dictionary that also has pictures (新世紀ビジュアル大辞典: 148,045 entries, 5,822 with one):
+only the entries with a picture, and only the files they use.
 """
 import argparse
 import io
 import json
+import re
 import sys
 import zipfile
 from concurrent.futures import ProcessPoolExecutor
@@ -40,6 +44,25 @@ def shrink(data: bytes, side: int) -> bytes | None:
         return None
 
 
+MARK = re.compile(r"gaiji|font|logo|icon|hitsujun", re.I)  # letters and marks drawn as images, not pictures
+
+
+def paths(node, out: set):
+    if isinstance(node, list):
+        for x in node:
+            paths(x, out)
+    elif isinstance(node, dict):
+        if isinstance(node.get("path"), str):
+            out.add(node["path"])
+        paths(node.get("content"), out)
+
+
+def pictured(term) -> bool:
+    used = set()
+    paths(term[5], used)
+    return any(p.lower().endswith(RASTER) and not MARK.search(p) for p in used)
+
+
 def repoint(node, renamed: dict):
     if isinstance(node, list):
         for x in node:
@@ -50,11 +73,19 @@ def repoint(node, renamed: dict):
         repoint(node.get("content"), renamed)
 
 
-def build(src: Path, side: int, out_dir: Path) -> Path:
+def build(src: Path, side: int, out_dir: Path, only_pictured: bool = False) -> Path:
     with zipfile.ZipFile(src) as z:
         title = json.loads(z.read("index.json"))["title"]
         out = out_dir / f"[Pictures] {safe_name(title)}.zip"
         names = [n for n in z.namelist() if not n.endswith("/")]
+        banks = {n: json.loads(z.read(n)) for n in names if n.endswith(".json") and "_bank_" in n}
+        if only_pictured:
+            used = set()
+            for n in [n for n in banks if "term_bank" in n]:
+                banks[n] = [t for t in banks[n] if pictured(t)]
+                paths(banks[n], used)
+            names = [n for n in names if n in used or n in banks and banks[n] or not n.lower().endswith(RASTER + (".json",))
+                     or n == "index.json"]
         pics = [n for n in names if n.lower().endswith(RASTER)]
         with ProcessPoolExecutor() as pool:
             small = dict(zip(pics, pool.map(shrink, (z.read(n) for n in pics), [side] * len(pics), chunksize=32)))
@@ -64,13 +95,12 @@ def build(src: Path, side: int, out_dir: Path) -> Path:
             for n in names:
                 if n in renamed:
                     o.writestr(zipfile.ZipInfo(renamed[n]), small[n])  # stored: WebP doesn't deflate
-                elif n.endswith(".json") and "_bank_" in n:
-                    bank = json.loads(z.read(n))
-                    repoint(bank, renamed)
-                    o.writestr(n, json.dumps(bank, ensure_ascii=False))
+                elif n in banks:
+                    repoint(banks[n], renamed)
+                    o.writestr(n, json.dumps(banks[n], ensure_ascii=False))
                 else:
                     o.writestr(n, z.read(n))
-    print(f"{out.name}: {len(renamed)}/{len(pics)} pictures shrunk, "
+    print(f"{out.name}: {sum(len(b) for n, b in banks.items() if 'term_bank' in n)} entries, {len(renamed)}/{len(pics)} pictures shrunk, "
           f"{src.stat().st_size / 1e6:.0f} MB -> {out.stat().st_size / 1e6:.0f} MB", flush=True)
     return out
 
@@ -83,11 +113,13 @@ if __name__ == "__main__":
     bank = [["犬", "いぬ", "", "", 0, [{"type": "structured-content", "content": {"tag": "img", "path": "a.png"}}]]]
     repoint(bank, {"a.png": "a.png.webp"})
     assert bank[0][5][0]["content"]["path"] == "a.png.webp"
+    assert pictured(bank[0]) and not pictured(["鳳", "", "", "", 0, [{"tag": "img", "path": "res/font/wa54b.png"}]])
 
     ap = argparse.ArgumentParser()
     ap.add_argument("zips", type=Path, nargs="+")
     ap.add_argument("--side", type=int, default=400, help="longest side in pixels (a 10em picture on the tablet is ~400)")
     ap.add_argument("--out", type=Path, default=OUT)
+    ap.add_argument("--pictured", action="store_true", help="only the entries with a picture")
     a = ap.parse_args()
     for zp in a.zips:
-        build(zp, a.side, a.out)
+        build(zp, a.side, a.out, a.pictured)
