@@ -508,7 +508,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(tv.history(person))
         route = {name: r.match(path) for name, r in tv.routes.items()}
         if route["episode"]:
-            data = tv.episode(route["episode"].group(1), status)
+            data = tv.episode(route["episode"].group(1), status, person)
             return self.send_json(data) if data else self.send_error(404)
         if route["video"]:
             f = tv.video(route["video"].group(1))
@@ -657,11 +657,15 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/tv/srs/rate":
                     return self.send_json(srs.rate(key, srs._word(body.get("word")), body.get("rating")))
                 return self.send_json(srs.undo(key))
-            if path == "/api/tv/known" and body.get("scene") is not None and srs.enabled(tv.person_of(scene=str(body["scene"]))):
-                done = srs.set_known(tv.person_of(scene=str(body["scene"])), str(body.get("word", "")), bool(body.get("known")))
+            if path == "/api/tv/known" and body.get("scene") is not None and srs.enabled(
+                    key := tv.person_of(scene=str(body["scene"]), viewer=body.get("person"))):
+                done = srs.set_known(key, str(body.get("word", "")), bool(body.get("known")))
                 reload()
                 return self.send_json(done)
             if path == "/api/tv/known":
+                # The known-words file is the feed person's: someone else's mark (Giovanna on a shared show) isn't kept there.
+                if body.get("scene") is not None and tv.person_of(scene=str(body["scene"]), viewer=body.get("person")) not in tv.marks_people():
+                    raise ValueError("marks for this person aren't kept on the PC")
                 return self.send_json(mark_known(str(body.get("word", "")), bool(body.get("known"))))
             if path == "/api/tv/known_words":
                 done = known.save(body)
