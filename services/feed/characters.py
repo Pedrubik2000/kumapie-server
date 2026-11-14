@@ -73,7 +73,18 @@ def add(works: list[str]) -> dict:
                 print(f"characters: {w}: {e}", flush=True)
                 break
         if new: _save(d)
+        if any(d["works"].get(w) for w in new):
+            build()
         return {"added": len(new)}
+
+
+def build() -> None:
+    """Starts the dojo-reading-characters task (reading_characters.py under Pedro's account: WSL isn't this service's).
+    kumapie picks the new dictionary up on its next start."""
+    import subprocess
+    r = subprocess.run(["schtasks", "/run", "/tn", "dojo-reading-characters"], capture_output=True, text=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    print(f"characters: build task {'started' if r.returncode == 0 else 'failed: ' + r.stderr.strip()}", flush=True)
 
 
 def ids() -> list[str]:

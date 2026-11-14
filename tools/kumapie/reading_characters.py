@@ -25,6 +25,7 @@ import characters  # noqa: E402
 OUT = cfg.state / "dicts" / "yomitan-ja"
 PORT = 3056
 TITLE = "Bee's Characters (books & manga)"
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # the task runs it with pythonw: no console flashes on the PC
 
 
 def _aliases(works: dict) -> dict[str, list[str]]:
@@ -57,7 +58,7 @@ def main(force: bool) -> None:
     server = subprocess.Popen(["wsl", "-e", "bash", "-lc",
                                f"cd ~/Japanese_Character_Name_Dictionary/yomitan-dict-builder && PORT={PORT} "
                                "CACHE_DIR=$HOME/.cache/bee-dict exec ./target/release/yomitan-dict-builder"],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
     try:
         for _ in range(60):
             try:
@@ -71,7 +72,7 @@ def main(force: bool) -> None:
                                     timeout=3600) as r, open(tmp, "wb") as f:
             f.write(r.read())
     finally:
-        subprocess.run(["wsl", "-e", "pkill", "-f", "target/release/yomitan-dict-builder"], capture_output=True)
+        subprocess.run(["wsl", "-e", "pkill", "-f", "target/release/yomitan-dict-builder"], capture_output=True, creationflags=NO_WINDOW)
         server.wait(timeout=30)
     aliases = _aliases(d["works"])
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
@@ -104,4 +105,7 @@ def main(force: bool) -> None:
 
 
 if __name__ == "__main__":
+    if sys.stdout is None:  # pythonw (the dojo-reading-characters task): to work\logs instead
+        sys.stdout = sys.stderr = open(cfg.root / "work" / "logs" / "reading-characters.log", "a", encoding="utf-8", buffering=1)
+        print(datetime.datetime.now().strftime("%F %T"), end=" ")
     main("--force" in sys.argv)
