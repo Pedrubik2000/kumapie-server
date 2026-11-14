@@ -19,7 +19,7 @@ from dojo import cfg  # noqa: E402
 
 STATE = cfg.state / "feed" / "reading_works.json"
 _lock = threading.Lock()
-SEARCH = "query($s:String){Page(perPage:5){media(search:$s,type:MANGA){id title{native romaji}}}}"
+SEARCH = "query($s:String,$t:MediaType){Page(perPage:10){media(search:$s,type:$t){id type title{native romaji}}}}"
 
 
 def load() -> dict:
@@ -35,22 +35,29 @@ def _norm(s: str) -> str:
     return re.sub(r"[\s　・〜~!！?？:：\-]", "", s or "").lower()
 
 
-def _search(q: str) -> list:
-    body = json.dumps({"query": SEARCH, "variables": {"s": q}}).encode()
+def _search(q: str, kind: str) -> list:
+    body = json.dumps({"query": SEARCH, "variables": {"s": q, "t": kind}}).encode()
     req = urllib.request.Request("https://graphql.anilist.co", body,
                                  {"Content-Type": "application/json", "User-Agent": "dojo-feed"})  # 403 without one
     return json.load(urllib.request.urlopen(req, timeout=20))["data"]["Page"]["media"]
 
 
-def resolve(work: str) -> list[int]:
-    """AniList ids for a work title: the best match, plus the other formats with the same title (novel + manga)."""
+def _title(m) -> str:
+    return _norm(m["title"]["native"] or m["title"]["romaji"])
+
+
+def resolve(work: str) -> list[str]:
+    """AniList media for a work title as "MANGA:97929" / "ANIME:127550": the best book/manga match and every book,
+    manga or anime whose title starts with its title (novel + manga + spin-offs + the anime: AniList puts some
+    characters only on the anime, like くまクマ熊ベアー's セニア)."""
     base = re.sub(r"[\s　]*(第?\d+巻?|vol\.?\s*\d+|\(\d+\))\s*$", "", work.strip(), flags=re.I)  # "…ベアー17" -> "…ベアー"
     for q in dict.fromkeys([base, _norm(base), work]):
         if not q: continue
-        found = _search(q)
+        found = _search(q, "MANGA")
         if found:
-            top = _norm(found[0]["title"]["native"] or found[0]["title"]["romaji"])
-            return [m["id"] for m in found if _norm(m["title"]["native"] or m["title"]["romaji"]) == top] or [found[0]["id"]]
+            top = _title(found[0])
+            same = [m for m in found + _search(q, "ANIME") if _title(m).startswith(top)]
+            return [f"{m['type']}:{m['id']}" for m in same] or [f"MANGA:{found[0]['id']}"]
     return []
 
 
@@ -69,8 +76,18 @@ def add(works: list[str]) -> dict:
         return {"added": len(new)}
 
 
-def ids() -> list[int]:
-    return sorted({i for v in load()["works"].values() for i in v})
+def ids() -> list[str]:
+    """Every work's media; an old plain id (before anime were added) counts as MANGA."""
+    return sorted({i if isinstance(i, str) else f"MANGA:{i}" for v in load()["works"].values() for i in v})
+
+
+def refresh() -> None:
+    """Looks every known title up again (after the lookup changed)."""
+    with _lock:
+        d = load()
+        for w in d["works"]:
+            d["works"][w] = resolve(w)
+        _save(d)
 
 
 if __name__ == "__main__":
