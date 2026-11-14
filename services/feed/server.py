@@ -19,6 +19,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   POST /api/tv/meta         {"show", "kind", "source", "id"}: "Fix match" for a PC show (tv.py, meta.py)
   /api/tv/...             the kumapie-tv app's API (Android TV, whole episodes scene by scene): see tv.py
   GET/POST /api/anilist   what kumapie's watched episodes would change on the AniList list / change it (anilist.py)
+  POST /api/characters/works {"works": [...]}: book/manga titles for their characters dictionary (characters.py)
   POST /api/sense         {"word", "reading", "sentence", "check"?}: AI vote on the Daijirin sense (sensepick.py)
   POST /api/nicosweg      {"prog", "t"}: Nicos Weg progress merged across Pedro's devices (nicosweg_sync)
   /api/sync/...           episodes made on phones/tablets, kept here for the person's other devices: see sync.py
@@ -60,6 +61,7 @@ import anki  # noqa: E402
 import anilist  # noqa: E402
 import voice  # noqa: E402
 import sensepick  # noqa: E402
+import characters  # noqa: E402
 
 F = cfg.raw["feed"]
 PORT = cfg.services["feed_port"]
@@ -631,6 +633,12 @@ class Handler(BaseHTTPRequestHandler):
                 w, r = str(b["word"]), str(b.get("reading") or "")
                 return self.send_json({"pick": sensepick.check(w, r)} if b.get("check") else sensepick.pick(w, r, str(b.get("sentence") or "")))
             except (ValueError, TypeError, KeyError) as e:
+                return self.send_error(400, str(e))
+        if path == "/api/characters/works":  # books/manga kumapie heard of (characters.py): their characters' dictionary
+            try:
+                b = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                return self.send_json(characters.add(list(b.get("works") or [])))
+            except (ValueError, TypeError, AttributeError) as e:
                 return self.send_error(400, str(e))
         if path == "/api/anilist":
             try:
