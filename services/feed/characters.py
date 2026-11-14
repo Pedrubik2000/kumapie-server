@@ -90,6 +90,20 @@ def refresh() -> None:
         _save(d)
 
 
+def alias(work: str, search: str) -> list[str]:
+    """An app title AniList can't find (chimahon's folder name "Okaeriarisu") looked up as another ("Okaeri Alice")."""
+    with _lock:
+        d = load()
+        d["works"][work] = resolve(search)
+        _save(d)
+        return d["works"][work]
+
+
 if __name__ == "__main__":
-    for w in sys.argv[1:]:
-        print(w, "->", resolve(w))
+    # characters.py <title>...          : what each title resolves to
+    # characters.py as <app title> <search title> : look the app's title up as another
+    if sys.argv[1:2] == ["as"]:
+        print(sys.argv[2], "->", alias(sys.argv[2], sys.argv[3]))
+    else:
+        for w in sys.argv[1:]:
+            print(w, "->", resolve(w))

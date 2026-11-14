@@ -27,6 +27,26 @@ PORT = 3056
 TITLE = "Bee's Characters (books & manga)"
 
 
+def _aliases(works: dict) -> dict[str, list[str]]:
+    """{AniList native title: the app titles that resolved to it}, for titles the apps send differently."""
+    media = {}
+    for work, ms in works.items():
+        for m in ms:
+            media.setdefault(int(str(m).split(":")[-1]), []).append(work)
+    if not media:
+        return {}
+    q = "query($ids:[Int]){Page(perPage:50){media(id_in:$ids){id title{native}}}}"
+    req = urllib.request.Request("https://graphql.anilist.co", json.dumps({"query": q, "variables": {"ids": list(media)}}).encode(),
+                                 {"Content-Type": "application/json", "User-Agent": "dojo-feed"})
+    out = {}
+    for m in json.load(urllib.request.urlopen(req, timeout=30))["data"]["Page"]["media"]:
+        native = m["title"]["native"]
+        if native:
+            out.setdefault(native, [])
+            out[native] += [w for w in media[m["id"]] if w not in out[native] and w != native]
+    return {k: v for k, v in out.items() if v}
+
+
 def main(force: bool) -> None:
     ids = characters.ids()
     d = characters.load()
@@ -53,6 +73,7 @@ def main(force: bool) -> None:
     finally:
         subprocess.run(["wsl", "-e", "pkill", "-f", "target/release/yomitan-dict-builder"], capture_output=True)
         server.wait(timeout=30)
+    aliases = _aliases(d["works"])
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
     out = OUT / f"bee_reading_{stamp}.zip"
     with zipfile.ZipFile(tmp) as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
@@ -65,6 +86,13 @@ def main(force: bool) -> None:
                 for k in ("downloadUrl", "indexUrl", "isUpdatable"):  # 127.0.0.1 links mean nothing on a phone
                     index.pop(k, None)
                 data = json.dumps(index, ensure_ascii=False, indent=2).encode()
+            elif item.filename.startswith("term_bank_") and aliases:
+                # kumapie shows a face only when the app's title matches "From: <title>"; chimahon sends romaji
+                # folder names (Chainsaw Man), Bee writes the Japanese title (チェンソーマン): add the app's titles.
+                text = data.decode("utf-8")
+                for native, works in aliases.items():
+                    text = text.replace(f"From: {native}\"", f"From: {native} ({' / '.join(works)})\"")
+                data = text.encode("utf-8")
             dst.writestr(item, data)
     tmp.unlink()
     for old in have:
