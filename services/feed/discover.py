@@ -19,6 +19,10 @@ episode is got ready the same way, in the background.
        -> {"state": "video", "url", "step"} (play it, words coming) / {"state": "ready", "id": episode, "url": video,
           "next"?: next episode's id} / {"state": "running" | "failed", "step", "error"}
        No hash/file/idx: the file prepared for that episode, {"state": "none"} if there is none.
+  GET  /api/discover/board?person                     Stremio's board: [{"id", "name", "items": [title]}], the
+                                                       person's AniList Planning list first, then Kitsu's catalogs
+                                                       (title: {"id", "type", "name", "poster", "year", "background",
+                                                       "logo", "description", "genres", "rating", "runtime"})
   GET  /api/discover/saved?person                     the titles kept on Home: [{"id", "type", "name", "poster", "year"}]
   POST /api/discover/saved {"person", "id", "type", "name", "poster", "year", "on"}  keeps (on) / drops one -> the list
 """
@@ -35,6 +39,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dojo import cfg
+import anilist
 import jobs
 import realdebrid
 import stremio
@@ -45,6 +50,8 @@ KITSU = stremio.META["kitsu"]
 DONE = cfg.state / "feed" / "watch.json"  # {"<person>|<lang>|<hash>|<file>": stream episode id,
 #                                            "ep|<person>|<lang>|<id>": {"hash", "file", "idx"} prepared for it}
 PROBED = cfg.state / "feed" / "rd_probe.json"  # {"<hash>|<file>": [unix time, on Real-Debrid]}, trusted a day
+KITSU_OF = cfg.state / "feed" / "anilist_kitsu.json"  # {AniList id: Kitsu id or ""}: Kitsu's mapping, for good
+CATALOGS = [("airing", "Top airing"), ("trending", "Trending"), ("popular", "Most popular"), ("rating", "Highest rated")]
 SAVED = cfg.state / "feed" / "discover_saved.json"  # {person: [{"id", "type", "name", "poster", "year"}]}: on Home
 PROBES = 8 # files checked on Real-Debrid per list (~6 calls each; its limit is ~250 a minute)
 TEXT_SUBS = {"subrip": "srt", "ass": "ass", "ssa": "ass", "webvtt": "vtt", "mov_text": "srt"}
@@ -52,6 +59,7 @@ LANGS = {"ja": ("ja", "jpn", "jp"), "en": ("en", "eng")}
 WEB = re.compile(r"^\[(subsplease|erai-raws|horriblesubs|cr|crunchyroll)\]|\b(cr|crunchyroll)\b")  # Crunchyroll's timing
 _lock = threading.Lock()
 _running: dict[str, dict] = {}
+_cache: dict[str, tuple[float, object]] = {}
 
 
 def _json(url: str):
@@ -94,12 +102,91 @@ def saved(person: str, body: dict | None = None) -> list[dict]:
     return mine
 
 
+def _title(m: dict) -> dict:
+    """A Stremio meta as Discover shows a title: poster for rows; backdrop, logo, rating, genres and text for the hero
+    and the title page."""
+    genres = m.get("genres") if isinstance(m.get("genres"), list) else []
+    return {"id": m["id"], "type": "movie" if m.get("type") == "movie" else "series", "name": m.get("name", ""),
+            "poster": m.get("poster", ""), "year": str(m.get("releaseInfo") or m.get("year") or ""),
+            "background": m.get("background") or "", "logo": m.get("logo") or "", "description": m.get("description") or "",
+            "genres": ", ".join(genres[:3]), "rating": str(m.get("imdbRating") or ""), "runtime": str(m.get("runtime") or "")}
+
+
 def catalog(q: str = "") -> list[dict]:
     path = f"/catalog/anime/kitsu-anime-list/search={urllib.parse.quote(q)}.json" if q.strip() \
         else "/catalog/anime/kitsu-anime-trending.json"
-    return [{"id": m["id"], "type": "movie" if m.get("type") == "movie" else "series", "name": m.get("name", ""),
-             "poster": m.get("poster", ""), "year": str(m.get("releaseInfo") or m.get("year") or "")}
-            for m in _json(KITSU + path).get("metas", []) if stremio.ID.match(m.get("id", ""))]
+    return [_title(m) for m in _json(KITSU + path).get("metas", []) if stremio.ID.match(m.get("id", ""))]
+
+
+def _cached(key: str, hours: float, make):
+    """make() kept [hours] in memory (the board's catalogs, AniList's list: seconds each to ask)."""
+    got = _cache.get(key)
+    if got and time.time() - got[0] < hours * 3600:
+        return got[1]
+    value = make()
+    _cache[key] = (time.time(), value)
+    return value
+
+
+def _kitsu_of(anilist_ids: list[int]) -> dict[int, str]:
+    """AniList id -> Kitsu id ("" when Kitsu has none), from Kitsu's own mapping table; kept in KITSU_OF for good."""
+    known = _read(KITSU_OF)
+
+    def one(aid):
+        url = ("https://kitsu.io/api/edge/mappings?filter%5BexternalSite%5D=anilist/anime&filter%5BexternalId%5D="
+               f"{aid}&include=item")
+        try:
+            data = _json(url).get("data") or []
+            item = ((data[0].get("relationships") or {}).get("item") or {}).get("data") or {} if data else {}
+            return aid, item.get("id", "") if item.get("type") == "anime" else ""
+        except (OSError, ValueError):
+            return aid, None  # asked again next time
+    todo = [a for a in anilist_ids if str(a) not in known]
+    with ThreadPoolExecutor(6) as pool:
+        got = {str(a): k for a, k in pool.map(one, todo) if k is not None}
+    if got:
+        with _lock:
+            KITSU_OF.write_text(json.dumps({**_read(KITSU_OF), **got}), encoding="utf-8")
+        known.update(got)
+    return {a: known.get(str(a), "") for a in anilist_ids}
+
+
+def planning(person: str) -> list[dict]:
+    """[person]'s AniList "Planning" list (anilist.py's user, for the person whose library it names), newest first,
+    as Discover titles; [] for anyone else or without a user."""
+    user, libs = anilist.CONF.get("user"), anilist.CONF.get("libraries", [])
+    if not user or not any(lib in libs for lib in sync.PEOPLE.get(person, {}).values()):
+        return []
+    data = anilist.gql("""query ($user: String) { MediaListCollection(userName: $user, type: ANIME, status: PLANNING,
+        sort: UPDATED_TIME_DESC) { lists { entries { mediaId } } } }""", {"user": user})
+    ids = [e["mediaId"] for li in data["MediaListCollection"]["lists"] for e in li["entries"]]
+    kitsu = _kitsu_of(ids)
+
+    def one(aid):
+        try:
+            return _cached("meta|" + kitsu[aid], 24, lambda: _title(_json(f"{KITSU}/meta/series/kitsu:{kitsu[aid]}.json")["meta"]))
+        except (OSError, ValueError, KeyError):
+            return None
+    with ThreadPoolExecutor(6) as pool:
+        return [t for t in pool.map(one, [a for a in ids if kitsu.get(a)]) if t]
+
+
+def board(person: str) -> list[dict]:
+    """Discover's rows, Stremio's board: the person's AniList Planning list, then Kitsu's catalogs.
+    [{"id", "name", "items": [title]}], rows that came back empty or failed left out."""
+    rows = [("planning", "AniList · Planning", lambda: planning(person))] + [
+        (c, name, lambda c=c: [_title(m) for m in _json(f"{KITSU}/catalog/anime/kitsu-anime-{c}.json").get("metas", [])
+                               if stremio.ID.match(m.get("id", ""))]) for c, name in CATALOGS]
+
+    def one(row):
+        rid, name, make = row
+        try:
+            return {"id": rid, "name": name, "items": _cached(f"{rid}|{person}", 0.5, make)}
+        except (OSError, ValueError, KeyError) as e:
+            print(f"discover board {rid}: {e}", flush=True)
+            return None
+    with ThreadPoolExecutor(len(rows)) as pool:
+        return [r for r in pool.map(one, rows) if r and r["items"]]
 
 
 def meta(type_: str, sid: str, person: str = "", lang: str = "ja") -> dict:
@@ -110,9 +197,7 @@ def meta(type_: str, sid: str, person: str = "", lang: str = "ja") -> dict:
             "ready": f"ep|{person}|{lang}|{v['id']}" in done}
            for v in m.get("videos") or [] if stremio.ID.match(v.get("id", "")) and v.get("season", 1) != 0]
     eps.sort(key=lambda e: (e["season"], e["number"]))
-    return {"name": m.get("name") or sid, "poster": m.get("poster") or "", "background": m.get("background") or "",
-            "description": m.get("description") or "", "year": str(m.get("releaseInfo") or m.get("year") or ""),
-            "episodes": eps}
+    return {**_title({"id": sid, **m}), "name": m.get("name") or sid, "episodes": eps}
 
 
 def _probe(token: str, h: str, file: str, idx: int) -> bool | None:

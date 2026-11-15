@@ -404,13 +404,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.sync_get(path.split("/")[3:])
         if path == "/api/aniworld":
             return self.send_json(jobs.listing())
-        if path in ("/api/discover/catalog", "/api/discover/saved") or (m := DISCOVER.match(path)):  # kumapie's Discover page (discover.py)
+        if path in ("/api/discover/catalog", "/api/discover/saved", "/api/discover/board") or (m := DISCOVER.match(path)):  # kumapie's Discover page (discover.py)
             try:
                 qs = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
                 if path == "/api/discover/catalog":
                     return self.send_json(discover.catalog(qs.get("q", "")))
                 if path == "/api/discover/saved":
                     return self.send_json(discover.saved(qs.get("person", "")))
+                if path == "/api/discover/board":
+                    return self.send_json(discover.board(qs.get("person", "")))
                 if m[1] == "meta":
                     return self.send_json(discover.meta(m[2], m[3], qs.get("person", ""), qs.get("lang", "ja")))
                 return self.send_json(discover.streams(m[2], m[3]))
