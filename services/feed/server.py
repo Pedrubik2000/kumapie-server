@@ -404,11 +404,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.sync_get(path.split("/")[3:])
         if path == "/api/aniworld":
             return self.send_json(jobs.listing())
-        if path == "/api/discover/catalog" or (m := DISCOVER.match(path)):  # kumapie's Discover page (discover.py)
+        if path in ("/api/discover/catalog", "/api/discover/saved") or (m := DISCOVER.match(path)):  # kumapie's Discover page (discover.py)
             try:
                 qs = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
                 if path == "/api/discover/catalog":
                     return self.send_json(discover.catalog(qs.get("q", "")))
+                if path == "/api/discover/saved":
+                    return self.send_json(discover.saved(qs.get("person", "")))
                 if m[1] == "meta":
                     return self.send_json(discover.meta(m[2], m[3], qs.get("person", ""), qs.get("lang", "ja")))
                 return self.send_json(discover.streams(m[2], m[3]))
@@ -634,6 +636,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(nicosweg_sync(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))), cors=True)
             except (ValueError, TypeError, KeyError, AttributeError) as e:
                 return self.send_error(400, str(e))
+        if path == "/api/discover/saved":  # a Discover title kept on Home (or dropped)
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                return self.send_json(discover.saved(str(body.get("person") or ""), body))
+            except ValueError as e:
+                return self.send_error(400, str(e)[:200])
         if path == "/api/tv/watch":
             try:
                 return self.send_json(discover.watch(tv, json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")))

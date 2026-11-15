@@ -19,6 +19,8 @@ episode is got ready the same way, in the background.
        -> {"state": "video", "url", "step"} (play it, words coming) / {"state": "ready", "id": episode, "url": video,
           "next"?: next episode's id} / {"state": "running" | "failed", "step", "error"}
        No hash/file/idx: the file prepared for that episode, {"state": "none"} if there is none.
+  GET  /api/discover/saved?person                     the titles kept on Home: [{"id", "type", "name", "poster", "year"}]
+  POST /api/discover/saved {"person", "id", "type", "name", "poster", "year", "on"}  keeps (on) / drops one -> the list
 """
 from __future__ import annotations
 
@@ -43,7 +45,8 @@ KITSU = stremio.META["kitsu"]
 DONE = cfg.state / "feed" / "watch.json"  # {"<person>|<lang>|<hash>|<file>": stream episode id,
 #                                            "ep|<person>|<lang>|<id>": {"hash", "file", "idx"} prepared for it}
 PROBED = cfg.state / "feed" / "rd_probe.json"  # {"<hash>|<file>": [unix time, on Real-Debrid]}, trusted a day
-PROBES = 8  # files checked on Real-Debrid per list (~6 calls each; its limit is ~250 a minute)
+SAVED = cfg.state / "feed" / "discover_saved.json"  # {person: [{"id", "type", "name", "poster", "year"}]}: on Home
+PROBES = 8 # files checked on Real-Debrid per list (~6 calls each; its limit is ~250 a minute)
 TEXT_SUBS = {"subrip": "srt", "ass": "ass", "ssa": "ass", "webvtt": "vtt", "mov_text": "srt"}
 LANGS = {"ja": ("ja", "jpn", "jp"), "en": ("en", "eng")}
 WEB = re.compile(r"^\[(subsplease|erai-raws|horriblesubs|cr|crunchyroll)\]|\b(cr|crunchyroll)\b")  # Crunchyroll's timing
@@ -70,6 +73,25 @@ def _done() -> dict:
 def _remember(**more) -> None:
     with _lock:
         DONE.write_text(json.dumps({**_done(), **more}), encoding="utf-8")
+
+
+def saved(person: str, body: dict | None = None) -> list[dict]:
+    """A person's Discover titles kept on Home, newest first; [body] {"id", "type", "name", "poster", "year", "on"}
+    adds (on true) or removes one first."""
+    if person not in sync.PEOPLE:
+        if body:
+            raise ValueError("unknown person")
+        return []
+    with _lock:
+        everyone = _read(SAVED)
+        mine = [t for t in everyone.get(person, []) if not body or t["id"] != body.get("id")]
+        if body and body.get("on"):
+            if not stremio.ID.match(str(body.get("id", ""))) or body.get("type") not in ("movie", "series"):
+                raise ValueError("bad title")
+            mine.insert(0, {k: str(body.get(k) or "")[:300] for k in ("id", "type", "name", "poster", "year")})
+        if body:
+            SAVED.write_text(json.dumps({**everyone, person: mine}, ensure_ascii=False), encoding="utf-8")
+    return mine
 
 
 def catalog(q: str = "") -> list[dict]:
@@ -348,8 +370,8 @@ def watch(tv, body: dict) -> dict:
                     ja, en, _ = subtitles(url, about["name"], season, number, file, Path(tmp), lambda s: None)
                 moved = _moved(quick, ja)
                 print(f"discover: {file} timed by name, alass moved it {moved:.2f} s", flush=True)
-                if moved > 0.5 or en:
-                    _remember(**{key: tv.stream({**made, "subs": ja if moved > 0.5 else quick, "english": en})["id"]})
+                if moved > 0.5 or en:  # the same episode id: where it was left stays
+                    tv.stream({**made, "id": eid, "subs": ja if moved > 0.5 else quick, "english": en})
             except Exception as e:  # noqa: BLE001 - the quick episode stays
                 print(f"discover: fitting {file} failed: {e}", flush=True)
         if job["next"] and not job["prep"]:

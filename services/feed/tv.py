@@ -663,9 +663,14 @@ class TV:
         english = subtitle_cues(str(body.get("english") or ""))
         title = str(body.get("title") or "Stream")[:200]
         eid = "stream-" + hashlib.sha1(json.dumps([key, cues, english]).encode()).hexdigest()[:12]
+        # "id": an existing stream episode made again with these lines (Discover's background fit), so where it was
+        # left (kept by episode id) stays.
+        again = str(body.get("id") or "")
+        if re.fullmatch(r"stream-[0-9a-f]{12}", again) and (STREAM / f"{again}.kumapie.json").exists():
+            eid = again
         out = STREAM / f"{eid}.kumapie.json"
         with self.stream_lock:
-            if not out.exists():
+            if not out.exists() or eid == again:
                 ja = lang == "ja"
                 episode = json.loads(pc_episodes.newepisode.build(
                     "" if ja else pc_episodes.MODELS[lang], eid, str(body.get("show") or title)[:200], title, cues[-1][1], "",
