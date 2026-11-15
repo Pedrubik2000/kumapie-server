@@ -406,9 +406,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(jobs.listing())
         if path == "/api/discover/catalog" or (m := DISCOVER.match(path)):  # kumapie's Discover page (discover.py)
             try:
+                qs = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
                 if path == "/api/discover/catalog":
-                    return self.send_json(discover.catalog(urllib.parse.parse_qs(url.query).get("q", [""])[0]))
-                return self.send_json((discover.meta if m[1] == "meta" else discover.streams)(m[2], m[3]))
+                    return self.send_json(discover.catalog(qs.get("q", "")))
+                if m[1] == "meta":
+                    return self.send_json(discover.meta(m[2], m[3], qs.get("person", ""), qs.get("lang", "ja")))
+                return self.send_json(discover.streams(m[2], m[3]))
             except (OSError, ValueError) as e:  # Kitsu, Torrentio unreachable: the reason on the phone
                 return self.send_error(502, str(e)[:200])
         if m := ADDON.match(path):  # the Stremio add-on that hands NuvioTV's titles to kumapie (stremio.py)
