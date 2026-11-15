@@ -268,13 +268,16 @@ def _next_id(type_: str, sid: str) -> str:
 
 
 def _prepare_next(tv, person: str, lang: str, type_: str, nxt: str, h: str, file: str) -> None:
-    """The next episode [nxt] got ready while this one plays: its file from torrent [h] (a season pack) if it has
-    it, else the best one Real-Debrid has in the same quality; watch.json "ep|…" remembers it for the app."""
+    """The next episode [nxt] got ready while this one plays: its file from torrent [h] (a season pack) if
+    Real-Debrid has it, else the best one Real-Debrid has in the same quality; watch.json "ep|…" remembers it for the
+    app. A pack's next file isn't always there: Frieren's E3-E5 were, E6 had to download (2026-11-15)."""
     if f"ep|{person}|{lang}|{nxt}" in _done():
         return
     token = os.environ.get("RD_API_TOKEN", "")
     found = stremio.candidates(type_, nxt, token)
     pick = next((c for c in stremio.ranked(found, stremio._minutes(type_, nxt), h) if c["hash"] == h), None)
+    if pick and not _on_rd(token, [pick]).get(f"{pick['hash']}|{pick['file']}"):
+        pick = None
     if not pick:
         q = next((q for q, pat in stremio.RESOLUTION.items() if re.search(pat, file.lower())), None)
         files = streams(type_, nxt, found)
