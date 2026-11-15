@@ -57,6 +57,7 @@ import srs  # noqa: E402
 import personal  # noqa: E402
 import jobs  # noqa: E402
 import stremio  # noqa: E402
+import discover  # noqa: E402
 import anki  # noqa: E402
 import anilist  # noqa: E402
 import voice  # noqa: E402
@@ -75,6 +76,7 @@ lock = threading.Lock()
 feed = {"clips": {}, "words": set(), "status": frozenset(), "levels": {}, "db_mtime": None}
 tts_lock = threading.Lock()
 tv = None  # TV(...) once segments() is defined
+DISCOVER = re.compile(r"^/api/discover/(meta|streams)/(movie|series)/((?:tt\d+|kitsu:\d+)(?::\d+)*)$")
 ADDON = re.compile(r"^/addon/(\w+)/(manifest\.json|stream/(movie|series)/((?:tt\d+|kitsu:\d+)(?::\d+)*)\.json)$")
 
 
@@ -402,6 +404,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.sync_get(path.split("/")[3:])
         if path == "/api/aniworld":
             return self.send_json(jobs.listing())
+        if path == "/api/discover/catalog" or (m := DISCOVER.match(path)):  # kumapie's Discover page (discover.py)
+            try:
+                if path == "/api/discover/catalog":
+                    return self.send_json(discover.catalog(urllib.parse.parse_qs(url.query).get("q", [""])[0]))
+                return self.send_json((discover.meta if m[1] == "meta" else discover.streams)(m[2], m[3]))
+            except (OSError, ValueError) as e:  # Kitsu, Torrentio unreachable: the reason on the phone
+                return self.send_error(502, str(e)[:200])
         if m := ADDON.match(path):  # the Stremio add-on that hands NuvioTV's titles to kumapie (stremio.py)
             if m[1] not in sync.PEOPLE:
                 return self.send_error(404)
@@ -622,6 +631,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(nicosweg_sync(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))), cors=True)
             except (ValueError, TypeError, KeyError, AttributeError) as e:
                 return self.send_error(400, str(e))
+        if path == "/api/tv/watch":
+            try:
+                return self.send_json(discover.watch(tv, json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")))
+            except ValueError as e:
+                return self.send_json({"state": "failed", "step": "", "error": str(e)[:200]})
         if path == "/api/tv/prepare":
             try:
                 return self.send_json(stremio.prepare(tv, json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")))
