@@ -670,6 +670,8 @@ class TV:
             "words": {i: {"s": "k" if i in status else "u", "g": g, "lemma": self.lemmas.get(i, ""),
                           "n": looked.get(i, 0), "m": i in marked, **({"c": cards[i]} if i in cards else {}), **self.reading(ep, i)}
                       for i, g in ep["gloss"].items()},
+            # Marks the split above lacks: words the device joins (personal dictionary) look these up.
+            "marked": sorted(marked - ep["gloss"].keys()),
         }
 
     def stream(self, body: dict) -> dict:
