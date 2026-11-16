@@ -97,7 +97,10 @@ def main(force: bool) -> None:
             dst.writestr(item, data)
     tmp.unlink()
     for old in have:
-        old.unlink()
+        try:
+            old.unlink()
+        except PermissionError:  # an app still reading it (2026-11-16): next build removes it
+            pass
     d = characters.load()  # the service may have added works meanwhile: keep them
     d["built"] = ids
     characters._save(d)

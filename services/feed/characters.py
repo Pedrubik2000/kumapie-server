@@ -81,6 +81,7 @@ def add(works: list[str]) -> dict:
 def add_media(work: str, media: list[str]) -> None:
     """A show kumapie streams or keeps on Home ("Dandadan" -> ["ANIME:171018", ...]): its characters join the same
     dictionary, so their faces show in its episodes (user, 2026-11-16: no face for Ayase in Dandadan)."""
+    media = franchise(media)
     with _lock:
         d = load()
         if not media or d["works"].get(work) == media:
@@ -88,6 +89,33 @@ def add_media(work: str, media: list[str]) -> None:
         d["works"][work] = media
         _save(d)
     build()
+
+
+REL = "query($id:Int){Media(id:$id){relations{edges{relationType node{id type}}}}}"
+
+
+def franchise(media: list[str], cap: int = 15) -> list[str]:
+    """The seasons before and after (PREQUEL/SEQUEL, followed on) and the source novel/manga: a sequel's AniList
+    entry lists only a few characters (Kusuriya S3: 14; 玉葉, 姚, 燕燕 are on S1/S2 and the novel, user 2026-11-16)."""
+    seen, todo = list(media), [m for m in media if m.startswith("ANIME:")]
+    while todo and len(seen) < cap:  # ponytail: cap keeps long franchises (Gundam) and AniList's rate limit in check
+        body = json.dumps({"query": REL, "variables": {"id": int(todo.pop(0).split(":")[1])}}).encode()
+        req = urllib.request.Request("https://graphql.anilist.co", body,
+                                     {"Content-Type": "application/json", "User-Agent": "dojo-feed"})
+        try:
+            edges = json.load(urllib.request.urlopen(req, timeout=20))["data"]["Media"]["relations"]["edges"]
+        except OSError as e:
+            print(f"characters: relations: {e}", flush=True)
+            break
+        for e in edges:
+            m = f"{e['node']['type']}:{e['node']['id']}"
+            if m in seen or e["relationType"] not in ("PREQUEL", "SEQUEL", "ADAPTATION"):
+                continue
+            if e["node"]["type"] == "MANGA" or e["relationType"] != "ADAPTATION":
+                seen.append(m)
+                if e["node"]["type"] == "ANIME":
+                    todo.append(m)
+    return seen[:cap]
 
 
 def build() -> None:
