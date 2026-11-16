@@ -39,6 +39,7 @@ import random
 import re
 import sqlite3
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -397,6 +398,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(known.listing(q.get("person", [None])[0], q.get("lang", [None])[0]))
             except ValueError as e:
                 return self.send_error(400, str(e))
+        if path == "/api/tv/cut":  # a line's audio / a scene the device can't decode itself (Miner.kt cutOnPc)
+            q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            src = q.get("src", "")
+            m = re.search(r"/api/tv/video/([\w-]+)$", src)
+            video = tv.video(m[1]) if m else None
+            if not video and not src.startswith(("https://", "http://")) or q.get("kind") not in ("ogg", "m4a", "webm"):
+                return self.send_error(400)
+            with tempfile.TemporaryDirectory(dir=cfg.work) as tmp:
+                try:
+                    f = discover.cut(str(video or src), int(q["start"]), int(q["end"]), q.get("lang", "ja"), q["kind"], Path(tmp))
+                except (ValueError, KeyError, subprocess.SubprocessError) as e:
+                    return self.send_error(400, str(e)[:200])
+                return self.send_file(f, {"ogg": "audio/ogg", "m4a": "audio/mp4", "webm": "video/webm"}[q["kind"]], cache=False)
         if path.startswith("/api/tv/srs/"):
             return self.srs_get(path, {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()})
         if path.startswith("/api/tv"):

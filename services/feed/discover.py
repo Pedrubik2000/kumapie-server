@@ -56,7 +56,7 @@ KITSU_OF = cfg.state / "feed" / "anilist_kitsu.json"  # {AniList id: Kitsu id or
 CATALOGS = [("airing", "Top airing"), ("trending", "Trending"), ("popular", "Most popular"), ("rating", "Highest rated")]
 SAVED = cfg.state / "feed" / "discover_saved.json"  # {person: [{"id", "type", "name", "poster", "year"}]}: on Home
 TEXT_SUBS = {"subrip": "srt", "ass": "ass", "ssa": "ass", "webvtt": "vtt", "mov_text": "srt"}
-LANGS = {"ja": ("ja", "jpn", "jp"), "en": ("en", "eng")}
+LANGS = {"ja": ("ja", "jpn", "jp"), "en": ("en", "eng"), "de": ("de", "deu", "ger")}
 WEB = re.compile(r"^\[(subsplease|erai-raws|horriblesubs|cr|crunchyroll)\]|\b(cr|crunchyroll)\b")  # Crunchyroll's timing
 _lock = threading.Lock()
 _running: dict[str, dict] = {}
@@ -275,13 +275,28 @@ def _tracks(url: str) -> list[dict]:
     return json.loads(out).get("streams", [])
 
 
-def _audio(tracks: list[dict]) -> str:
-    """ffmpeg's -map for the Japanese audio: by its language tag, else its name ("Jap": a dual-audio file with no tags
-    and the English dub first, Dandadan 2 [RUBaDUB]), else the first audio track."""
+def _audio(tracks: list[dict], lang: str = "ja") -> str:
+    """ffmpeg's -map for the [lang] audio: by its language tag, else (Japanese) its name ("Jap": a dual-audio file with
+    no tags and the English dub first, Dandadan 2 [RUBaDUB]), else the first audio track."""
     audio = [t for t in tracks if t.get("codec_type") == "audio"]
     tags = lambda t: t.get("tags") or {}  # noqa: E731
-    ja = next((t for t in audio if tags(t).get("language", "").lower() in LANGS["ja"]), None) or         next((t for t in audio if re.search(r"(^|[^a-z])(ja|jp|jpn|jap|japanese)|日本", tags(t).get("title", "").lower())), None)
+    ja = next((t for t in audio if tags(t).get("language", "").lower() in LANGS.get(lang, (lang,))), None) or lang == "ja" and next((t for t in audio if re.search(r"(^|[^a-z])(ja|jp|jpn|jap|japanese)|日本", tags(t).get("title", "").lower())), None)
     return f"0:{ja['index']}" if ja else "0:a:0"
+
+
+def cut(src: str, start_ms: int, end_ms: int, lang: str, kind: str, tmp: Path) -> Path:
+    """GET /api/tv/cut: [src]'s [lang] audio from [start_ms] to [end_ms] for a device that can't decode it (the
+    living-room Chromecast has no AC-3/E-AC-3 decoder: Netflix tracks, 2026-11-16), as the device would have made it:
+    kind ogg (Opus 32 kbps 48 kHz), m4a (AAC) or webm (the scene: VP9 480p + Opus 64 kbps, as anki.mine's clip)."""
+    a = _audio(_tracks(src), lang)
+    enc = {"ogg": ["-vn", "-map", a, "-c:a", "libopus", "-b:a", "32k", "-ar", "48000"],
+           "m4a": ["-vn", "-map", a, "-c:a", "aac", "-b:a", "320k"],
+           "webm": ["-map", "0:v:0", "-map", a, "-vf", "scale=-2:480", "-c:v", "libvpx-vp9", "-crf", "45", "-b:v", "280k",
+                    "-g", "240", "-deadline", "realtime", "-cpu-used", "8", "-c:a", "libopus", "-b:a", "64k"]}[kind]
+    out = tmp / f"cut.{kind}"
+    jobs._out([jobs.FFMPEG, "-v", "error", "-y", "-ss", f"{start_ms / 1000:.3f}", "-to", f"{end_ms / 1000:.3f}", "-i", src,
+               *enc, str(out)])
+    return out
 
 
 def _sub(tracks: list[dict], lang: str) -> dict | None:
@@ -501,6 +516,8 @@ if __name__ == "__main__":
     assert not _sub([{"index": 2, "codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "jpn"}}], "ja")
     dual = [{"index": 1, "codec_type": "audio", "tags": {"title": "Eng"}}, {"index": 2, "codec_type": "audio", "tags": {"title": "Jap"}}]
     assert _audio(dual) == "0:2" and _audio(dual[:1]) == "0:a:0"
+    netflix = [{"index": 1, "codec_type": "audio", "tags": {"language": "spa", "title": "Castellano (Netflix)"}}, {"index": 2, "codec_type": "audio", "tags": {"language": "jpn"}}, {"index": 3, "codec_type": "audio", "tags": {"language": "eng"}}]
+    assert _audio(netflix) == "0:2" and _audio(netflix, "en") == "0:3" and _audio(netflix[:1], "en") == "0:a:0"
     assert _audio([{"index": 1, "codec_type": "audio", "tags": {"language": "eng"}}, {"index": 3, "codec_type": "audio", "tags": {"language": "jpn"}}]) == "0:3"
     cr = "[CR] Sousou no Frieren - 01 [720p] [90BE6BB0].mkv"
     assert _same_release(cr, "[SubsPlease] Sousou no Frieren - 01 (1080p) [ABCD1234].ja.srt")
