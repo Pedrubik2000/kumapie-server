@@ -25,11 +25,13 @@ episode is got ready the same way, in the background.
                                                        "logo", "description", "genres", "rating", "runtime"})
   GET  /api/discover/subs/<type>/<id>?file           a Jimaku file's lines, shown live while the episode is made:
                                                        {"cues": [[start, end, text]], "name", "timed"}
+  GET  /api/discover/going?person&lang               streamed titles to go on with (going())
   GET  /api/discover/saved?person                     the titles kept on Home: [{"id", "type", "name", "poster", "year"}]
   POST /api/discover/saved {"person", "id", "type", "name", "poster", "year", "on"}  keeps (on) / drops one -> the list
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -117,6 +119,51 @@ def saved(person: str, body: dict | None = None) -> list[dict]:
         if body:
             SAVED.write_text(json.dumps({**everyone, person: mine}, ensure_ascii=False), encoding="utf-8")
     return mine
+
+
+def going(tv, person: str, lang: str = "ja") -> list[dict]:
+    """GET /api/discover/going?person&lang: Home's "Continue watching" for streamed titles, one per title, newest first:
+    the episode played last if left partway, else (finished or marked watched) the one after it, never started
+    (resume null; "ready": a file is prepared, it plays at once). [{"title": {"id", "type", "name", "poster", "year"},
+    "id": episode, "number", "duration", "resume", "resumed_at", "ready"}]"""
+    done = _done()
+    tv.synced()
+    with tv.tv_db() as db:
+        rows = db.execute("select person, episode, pos, updated from progress where episode like 'stream-%'").fetchall()
+    pos = {e: (p, int(datetime.datetime.fromisoformat(u).timestamp())) for k, e, p, u in rows if u and k == tv.key_for(e, person)}
+    last: dict[str, tuple] = {}  # title -> (when, episode, pos, duration)
+    for k, pick in done.items():
+        parts = k.split("|")
+        if len(parts) != 4 or parts[:3] != ["ep", person, lang] or not isinstance(pick, dict):
+            continue
+        eid = done.get(f"{person}|{lang}|{pick.get('hash')}|{pick.get('file')}")
+        if eid not in pos:
+            continue
+        sid = parts[3]
+        base = ":".join(sid.split(":")[:2 if sid.startswith("kitsu:") else 1])
+        p, at = pos[eid]
+        dur = float((tv.episodes.get(eid) or {}).get("duration") or 0)
+        if at > last.get(base, (0,))[0]:
+            last[base] = (at, sid, p, dur)
+    out = []
+    for base, (at, sid, p, dur) in last.items():
+        type_ = "movie" if sid == base else "series"
+        if f"seen|{person}|{lang}|{sid}" in done or (dur and dur - p <= 120):  # finished: the next one
+            sid = _next_id(type_, sid)
+            if not sid or f"seen|{person}|{lang}|{sid}" in done:
+                continue
+            p = None
+        elif p <= 20:
+            continue
+        try:
+            t = _cached(f"title|{base}", 24, lambda: _title({"id": base, **(_json(
+                f"{KITSU if base.startswith('kitsu:') else stremio.META['tt']}/meta/{type_}/{base}.json").get("meta") or {})}))
+        except (OSError, ValueError):
+            continue
+        out.append({"title": {k: t[k] for k in ("id", "type", "name", "poster", "year")}, "id": sid,
+                    "number": stremio.numbers(sid)[1], "duration": dur, "resume": p, "resumed_at": at,
+                    "ready": f"ep|{person}|{lang}|{sid}" in done})
+    return sorted(out, key=lambda g: -g["resumed_at"])
 
 
 def _title(m: dict) -> dict:
