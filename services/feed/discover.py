@@ -289,9 +289,18 @@ def _direct(token: str, h: str, file: str, idx: int, step) -> str:
 
 
 def _tracks(url: str) -> list[dict]:
-    out = jobs._out([jobs.FFPROBE, "-v", "error", "-show_entries", "stream=index,codec_type,codec_name:stream_tags=language",
+    out = jobs._out([jobs.FFPROBE, "-v", "error", "-show_entries", "stream=index,codec_type,codec_name:stream_tags=language,title",
                      "-of", "json", url])
     return json.loads(out).get("streams", [])
+
+
+def _audio(tracks: list[dict]) -> str:
+    """ffmpeg's -map for the Japanese audio: by its language tag, else its name ("Jap": a dual-audio file with no tags
+    and the English dub first, Dandadan 2 [RUBaDUB]), else the first audio track."""
+    audio = [t for t in tracks if t.get("codec_type") == "audio"]
+    tags = lambda t: t.get("tags") or {}  # noqa: E731
+    ja = next((t for t in audio if tags(t).get("language", "").lower() in LANGS["ja"]), None) or         next((t for t in audio if re.search(r"(^|[^a-z])(ja|jp|jpn|jap|japanese)|日本", tags(t).get("title", "").lower())), None)
+    return f"0:{ja['index']}" if ja else "0:a:0"
 
 
 def _sub(tracks: list[dict], lang: str) -> dict | None:
@@ -344,7 +353,7 @@ def subtitles(url: str, show: str, season, number, file: str, tmp: Path, step, q
             cmd += ["-map", f"0:{t['index']}", "-c", "copy" if t["codec_name"] in ("ass", "ssa", "subrip") else "srt", got[lang]]
     audio = tmp / "audio.wav"
     if not ja:  # Jimaku's file is fitted to this release: Parakeet needs its audio when there's no English track
-        cmd += ["-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", audio]
+        cmd += ["-map", _audio(tracks), "-vn", "-ac", "1", "-ar", "16000", audio]
     step("reading the file once for its subtitles" + ("" if ja else " and audio") + " (a minute or two)")
     jobs._run(cmd)
     english = got["en"].read_text(encoding="utf-8", errors="replace") if "en" in got else ""
@@ -496,6 +505,9 @@ def watch(tv, body: dict) -> dict:
 if __name__ == "__main__":
     assert _sub([{"index": 2, "codec_type": "subtitle", "codec_name": "ass", "tags": {"language": "jpn"}}], "ja")["index"] == 2
     assert not _sub([{"index": 2, "codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "jpn"}}], "ja")
+    dual = [{"index": 1, "codec_type": "audio", "tags": {"title": "Eng"}}, {"index": 2, "codec_type": "audio", "tags": {"title": "Jap"}}]
+    assert _audio(dual) == "0:2" and _audio(dual[:1]) == "0:a:0"
+    assert _audio([{"index": 1, "codec_type": "audio", "tags": {"language": "eng"}}, {"index": 3, "codec_type": "audio", "tags": {"language": "jpn"}}]) == "0:3"
     cr = "[CR] Sousou no Frieren - 01 [720p] [90BE6BB0].mkv"
     assert _same_release(cr, "[SubsPlease] Sousou no Frieren - 01 (1080p) [ABCD1234].ja.srt")
     assert _same_release("[Judas] Frieren - 01.mkv", "[Judas] Frieren - 01.ass")
