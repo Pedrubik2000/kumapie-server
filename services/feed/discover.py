@@ -51,7 +51,7 @@ from tv import STREAM, subtitle_cues
 KITSU = stremio.META["kitsu"]
 DONE = cfg.state / "feed" / "watch.json"  # {"<person>|<lang>|<hash>|<file>": stream episode id,
 #                                            "ep|<person>|<lang>|<id>": {"hash", "file", "idx"} prepared for it}
-PROBED = cfg.state / "feed" / "rd_probe.json"  # {"<hash>|<file>": [unix time, on Real-Debrid]}, trusted a day
+PROBED = cfg.state / "feed" / "rd_probe.json"  # {"<hash>|<file>": [unix time, on Real-Debrid or "refused"]}, a day
 KITSU_OF = cfg.state / "feed" / "anilist_kitsu.json"  # {AniList id: Kitsu id or ""}: Kitsu's mapping, for good
 CATALOGS = [("airing", "Top airing"), ("trending", "Trending"), ("popular", "Most popular"), ("rating", "Highest rated")]
 SAVED = cfg.state / "feed" / "discover_saved.json"  # {person: [{"id", "type", "name", "poster", "year"}]}: on Home
@@ -248,7 +248,7 @@ def _probe(token: str, h: str, file: str, idx: int) -> bool | None:
         busy.release()
 
 
-def _on_rd(token: str, files: list[dict]) -> dict[str, bool]:
+def _on_rd(token: str, files: list[dict]) -> dict[str, bool | str]:
     """{"<hash>|<file>": on Real-Debrid now} for [files]: a day's earlier answers, the first PROBES others probed
     (4 at a time). Torrentio's RD+ flag said "cached" for a file that took 8 minutes (2026-11-15)."""
     if not token:
@@ -262,7 +262,8 @@ def _on_rd(token: str, files: list[dict]) -> dict[str, bool]:
             return k, _probe(token, c["hash"], c["file"], c["idx"])
         except (OSError, RuntimeError, KeyError, ValueError, TypeError) as e:
             print(f"rd probe {c['file']}: {e}", flush=True)
-            return k, None
+            # 451 infringing_file: Real-Debrid never serves it (SubsPlease, Erai-raws, [CR] ones, 2026-11-15)
+            return k, "refused" if "HTTP 451" in str(e) else None
     with ThreadPoolExecutor(4) as pool:
         got = {k: v for k, v in pool.map(one, todo) if v is not None}
     if got:
@@ -291,6 +292,8 @@ def streams(type_: str, sid: str, found: list[dict] | None = None) -> list[dict]
     out = []
     for q, c in picked:
         gb, now = c["gb"], on.get(f"{c['hash']}|{c['file']}")
+        if now == "refused":
+            continue
         size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1000:.0f} MB"
         note = "" if now else " · ⏳ Real-Debrid downloads it first" if now is False else " · ⏳ maybe not on Real-Debrid"
         mbps = stremio._mbps(c, minutes)
@@ -437,7 +440,7 @@ def _prepare_next(tv, person: str, lang: str, type_: str, nxt: str, h: str, file
     token = os.environ.get("RD_API_TOKEN", "")
     found = stremio.candidates(type_, nxt, token)
     pick = next((c for c in stremio.ranked(found, stremio._minutes(type_, nxt), h) if c["hash"] == h), None)
-    if pick and not _on_rd(token, [pick]).get(f"{pick['hash']}|{pick['file']}"):
+    if pick and _on_rd(token, [pick]).get(f"{pick['hash']}|{pick['file']}") is not True:
         pick = None
     if not pick:
         q = next((q for q, pat in stremio.RESOLUTION.items() if re.search(pat, file.lower())), None)
