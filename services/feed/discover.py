@@ -211,10 +211,18 @@ def meta(type_: str, sid: str, person: str = "", lang: str = "ja") -> dict:
     done = _done()
     eps = [{"id": v["id"], "season": v.get("season") or 1, "number": v.get("episode") or v.get("number") or 0,
             "title": v.get("title") or v.get("name") or "", "thumb": v.get("thumbnail") or "",
-            "ready": f"ep|{person}|{lang}|{v['id']}" in done, "watched": f"seen|{person}|{lang}|{v['id']}" in done}
+            "ready": f"ep|{person}|{lang}|{v['id']}" in done, "watched": f"seen|{person}|{lang}|{v['id']}" in done,
+            "source": _source(done.get(f"ep|{person}|{lang}|{v['id']}"))}
            for v in m.get("videos") or [] if stremio.ID.match(v.get("id", "")) and v.get("season", 1) != 0]
     eps.sort(key=lambda e: (e["season"], e["number"]))
     return {**_title({"id": sid, **m}), "name": m.get("name") or sid, "episodes": eps}
+
+
+def _source(pick: dict | None) -> str:
+    """The ▶ file's "1080p · 8.1 Mbps" (files got ready before 2026-11-15 21:45: the quality in its name only)."""
+    if not pick:
+        return ""
+    return pick.get("label") or next((q for q, pat in stremio.RESOLUTION.items() if re.search(pat, pick["file"].lower())), "")
 
 
 def _refused() -> set[str]:
@@ -250,7 +258,8 @@ def streams(type_: str, sid: str, found: list[dict] | None = None) -> list[dict]
         mbps = stremio._mbps(c, minutes)
         out.append(((not now, bool(now) and mbps > 20), {
             "q": q, "label": ("▶ starts now · " if now else "") + f"{q} · {size} · {mbps:.1f} Mbps{note}",
-            "about": stremio.about(c).strip(), "hash": c["hash"], "file": c["file"], "idx": c["idx"], "now": bool(now)}))
+            "about": stremio.about(c).strip(), "hash": c["hash"], "file": c["file"], "idx": c["idx"], "now": bool(now),
+            "short": f"{q} · {mbps:.1f} Mbps"}))
     # Starts-now first, and among those up to 20 Mbps first (a 38 Mbps FLAC remux topped a 1.5 Mbps file); stable: quality order.
     return [s for _, s in sorted(out, key=lambda t: t[0])]
 
@@ -390,7 +399,8 @@ def _prepare_next(tv, person: str, lang: str, type_: str, nxt: str, h: str, file
         return
     token = os.environ.get("RD_API_TOKEN", "")
     found = stremio.candidates(type_, nxt, token)
-    pick = next((c for c in stremio.ranked(found, stremio._minutes(type_, nxt), h) if c["hash"] == h), None)
+    minutes = stremio._minutes(type_, nxt)
+    pick = next((c for c in stremio.ranked(found, minutes, h) if c["hash"] == h), None)
     if pick and (pick["cached"] is not True or f"{pick['hash']}|{pick['file']}" in _refused()):
         pick = None
     if not pick:
@@ -399,7 +409,9 @@ def _prepare_next(tv, person: str, lang: str, type_: str, nxt: str, h: str, file
         pick = next((f for f in files if f["now"] and f["q"] == q), None) or next((f for f in files if f["now"]), None)
     if not pick:
         return  # nothing that starts at once: the app's file list then
-    _remember(**{f"ep|{person}|{lang}|{nxt}": {"hash": pick["hash"], "file": pick["file"], "idx": pick["idx"]}})
+    label = pick.get("short") or "{} · {:.1f} Mbps".format(
+        next((q for q in stremio.QUALITIES if q in stremio.qualities(pick)), ""), stremio._mbps(pick, minutes))
+    _remember(**{f"ep|{person}|{lang}|{nxt}": {"hash": pick["hash"], "file": pick["file"], "idx": pick["idx"], "label": label}})
     watch(tv, {"person": person, "lang": lang, "type": type_, "id": nxt, "hash": pick["hash"], "file": pick["file"],
                "idx": str(pick["idx"]), "prep": "1"})
 
@@ -434,7 +446,7 @@ def watch(tv, body: dict) -> dict:
         job = _running[key] = {"state": "running", "step": "asking Real-Debrid", "error": "", "next": nxt,
                                "prep": bool(body.get("prep")), "file": file}
     if not body.get("prep"):  # watched now: the one before counts as seen; a file picked by hand is this episode's ▶ file
-        more = {f"ep|{person}|{lang}|{sid}": {"hash": h, "file": file, "idx": int(idx)}} if body.get("hash") else {}
+        more = {f"ep|{person}|{lang}|{sid}": {"hash": h, "file": file, "idx": int(idx), "label": str(body.get("label") or "")[:40]}}             if body.get("hash") else {}
         if prev := _next_id(type_, sid, -1):
             more[f"seen|{person}|{lang}|{prev}"] = 1
         _remember(**more)
