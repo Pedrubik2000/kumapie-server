@@ -510,6 +510,9 @@ def watch(tv, body: dict) -> dict:
             job.update(state="ready", id=eid, url=url, step="")
         except Exception as e:  # noqa: BLE001 - every failure is shown on the phone / TV
             job.update(state="failed", error=str(e)[:300])
+            if "HTTP 451" in str(e):  # Real-Debrid won't serve it: out of the file lists (Torrentio does the same)
+                with _lock:
+                    PROBED.write_text(json.dumps({**_read(PROBED), f"{h}|{file}": [time.time(), "refused"]}), encoding="utf-8")
             return
         if quick:  # Jimaku's file was taken by its name: fitted now, the episode made again if it moved (or gains English)
             try:
