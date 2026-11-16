@@ -640,6 +640,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(nicosweg_sync(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))), cors=True)
             except (ValueError, TypeError, KeyError, AttributeError) as e:
                 return self.send_error(400, str(e))
+        if path == "/api/discover/seen":  # a Discover episode marked watched (or not)
+            try:
+                return self.send_json(discover.seen(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")))
+            except ValueError as e:
+                return self.send_error(400, str(e)[:200])
         if path == "/api/discover/saved":  # a Discover title kept on Home (or dropped)
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")

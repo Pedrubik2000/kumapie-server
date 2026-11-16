@@ -85,6 +85,22 @@ def _remember(**more) -> None:
         DONE.write_text(json.dumps({**_done(), **more}), encoding="utf-8")
 
 
+def seen(body: dict) -> dict:
+    """POST /api/discover/seen {"person", "lang", "id", "on"}: an episode marked watched (or not) by hand. Starting an
+    episode marks the one before it watched too (watch())."""
+    person, lang, sid = str(body.get("person") or ""), str(body.get("lang") or "ja"), str(body.get("id") or "")
+    if lang not in sync.PEOPLE.get(person, {}) or not stremio.ID.match(sid):
+        raise ValueError("bad episode")
+    with _lock:
+        done = _done()
+        if body.get("on", True):
+            done[f"seen|{person}|{lang}|{sid}"] = 1
+        else:
+            done.pop(f"seen|{person}|{lang}|{sid}", None)
+        DONE.write_text(json.dumps(done), encoding="utf-8")
+    return {"ok": True}
+
+
 def saved(person: str, body: dict | None = None) -> list[dict]:
     """A person's Discover titles kept on Home, newest first; [body] {"id", "type", "name", "poster", "year", "on"}
     adds (on true) or removes one first."""
@@ -196,7 +212,7 @@ def meta(type_: str, sid: str, person: str = "", lang: str = "ja") -> dict:
     done = _done()
     eps = [{"id": v["id"], "season": v.get("season") or 1, "number": v.get("episode") or v.get("number") or 0,
             "title": v.get("title") or v.get("name") or "", "thumb": v.get("thumbnail") or "",
-            "ready": f"ep|{person}|{lang}|{v['id']}" in done}
+            "ready": f"ep|{person}|{lang}|{v['id']}" in done, "watched": f"seen|{person}|{lang}|{v['id']}" in done}
            for v in m.get("videos") or [] if stremio.ID.match(v.get("id", "")) and v.get("season", 1) != 0]
     eps.sort(key=lambda e: (e["season"], e["number"]))
     return {**_title({"id": sid, **m}), "name": m.get("name") or sid, "episodes": eps}
@@ -402,12 +418,14 @@ def _moved(a: str, b: str) -> float:
     return gaps[len(gaps) // 2] if gaps else 99.0
 
 
-def _next_id(type_: str, sid: str) -> str:
+def _next_id(type_: str, sid: str, step: int = 1) -> str:
+    """The episode after [sid] (step -1: before it), "" if none."""
     try:
         eps = [e[0] for e in stremio.meta(type_, sid)["episodes"]]
     except (OSError, ValueError):
         return ""
-    return eps[eps.index(sid) + 1] if sid in eps and eps.index(sid) + 1 < len(eps) else ""
+    i = eps.index(sid) + step if sid in eps else -1
+    return eps[i] if 0 <= i < len(eps) else ""
 
 
 def _prepare_next(tv, person: str, lang: str, type_: str, nxt: str, h: str, file: str) -> None:
@@ -461,6 +479,11 @@ def watch(tv, body: dict) -> dict:
             return job
         job = _running[key] = {"state": "running", "step": "asking Real-Debrid", "error": "", "next": nxt,
                                "prep": bool(body.get("prep")), "file": file}
+    if not body.get("prep"):  # watched now: the one before counts as seen; a file picked by hand is this episode's ▶ file
+        more = {f"ep|{person}|{lang}|{sid}": {"hash": h, "file": file, "idx": int(idx)}} if body.get("hash") else {}
+        if prev := _next_id(type_, sid, -1):
+            more[f"seen|{person}|{lang}|{prev}"] = 1
+        _remember(**more)
 
     def run():
         token = os.environ.get("RD_API_TOKEN", "")
