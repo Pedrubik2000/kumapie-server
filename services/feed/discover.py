@@ -51,11 +51,10 @@ from tv import STREAM, subtitle_cues
 KITSU = stremio.META["kitsu"]
 DONE = cfg.state / "feed" / "watch.json"  # {"<person>|<lang>|<hash>|<file>": stream episode id,
 #                                            "ep|<person>|<lang>|<id>": {"hash", "file", "idx"} prepared for it}
-PROBED = cfg.state / "feed" / "rd_probe.json"  # {"<hash>|<file>": [unix time, on Real-Debrid or "refused"]}, a day
+PROBED = cfg.state / "feed" / "rd_probe.json"  # {"<hash>|<file>": [unix time, "refused"]}: Real-Debrid's 451s, a day
 KITSU_OF = cfg.state / "feed" / "anilist_kitsu.json"  # {AniList id: Kitsu id or ""}: Kitsu's mapping, for good
 CATALOGS = [("airing", "Top airing"), ("trending", "Trending"), ("popular", "Most popular"), ("rating", "Highest rated")]
 SAVED = cfg.state / "feed" / "discover_saved.json"  # {person: [{"id", "type", "name", "poster", "year"}]}: on Home
-PROBES = 8 # files checked on Real-Debrid per list (~6 calls each; its limit is ~250 a minute)
 TEXT_SUBS = {"subrip": "srt", "ass": "ass", "ssa": "ass", "webvtt": "vtt", "mov_text": "srt"}
 LANGS = {"ja": ("ja", "jpn", "jp"), "en": ("en", "eng")}
 WEB = re.compile(r"^\[(subsplease|erai-raws|horriblesubs|cr|crunchyroll)\]|\b(cr|crunchyroll)\b")  # Crunchyroll's timing
@@ -218,58 +217,12 @@ def meta(type_: str, sid: str, person: str = "", lang: str = "ja") -> dict:
     return {**_title({"id": sid, **m}), "name": m.get("name") or sid, "episodes": eps}
 
 
-def _probe(token: str, h: str, file: str, idx: int) -> bool | None:
-    """Real-Debrid has [file] of torrent [h] now: added with only that file, it says "downloaded" within seconds.
-    The probe's torrent is deleted again (watch() adds it back, instantly when it's there). None: not known (that
-    torrent is being fetched for a watch right now)."""
-    with stremio._lock:
-        busy = stremio._torrents.setdefault(h, threading.Lock())
-    if not busy.acquire(blocking=False):
-        return None
-    try:
-        tid = realdebrid._call(token, "POST", "/torrents/addMagnet", {"magnet": f"magnet:?xt=urn:btih:{h}"})["id"]
-        try:
-            for _ in range(8):
-                info = realdebrid._call(token, "GET", f"/torrents/info/{tid}")
-                if info["status"] == "downloaded":
-                    return True
-                if info["status"] in stremio.DEAD or info["status"] in ("downloading", "compressing", "uploading"):
-                    return False
-                if info["status"] == "waiting_files_selection":
-                    if not (f := stremio._file_of(info, file, idx)):
-                        return False
-                    realdebrid._call(token, "POST", f"/torrents/selectFiles/{tid}", {"files": str(f["id"])})
-                    continue
-                time.sleep(1)  # magnet_conversion / queued
-            return False
-        finally:
-            realdebrid._call(token, "DELETE", f"/torrents/delete/{tid}")
-    finally:
-        busy.release()
-
-
-def _on_rd(token: str, files: list[dict]) -> dict[str, bool | str]:
-    """{"<hash>|<file>": on Real-Debrid now} for [files]: a day's earlier answers, the first PROBES others probed
-    (4 at a time). Torrentio's RD+ flag said "cached" for a file that took 8 minutes (2026-11-15)."""
-    if not token:
-        return {}
-    known = {k: v for k, (t, v) in _read(PROBED).items() if time.time() - t < 86400}
-    todo = list({f"{c['hash']}|{c['file']}": c for c in files if f"{c['hash']}|{c['file']}" not in known}.items())[:PROBES]
-
-    def one(item):
-        k, c = item
-        try:
-            return k, _probe(token, c["hash"], c["file"], c["idx"])
-        except (OSError, RuntimeError, KeyError, ValueError, TypeError) as e:
-            print(f"rd probe {c['file']}: {e}", flush=True)
-            # 451 infringing_file: Real-Debrid never serves it (SubsPlease, Erai-raws, [CR] ones, 2026-11-15)
-            return k, "refused" if "HTTP 451" in str(e) else None
-    with ThreadPoolExecutor(4) as pool:
-        got = {k: v for k, v in pool.map(one, todo) if v is not None}
-    if got:
-        with _lock:
-            PROBED.write_text(json.dumps({**_read(PROBED), **{k: [time.time(), v] for k, v in got.items()}}), encoding="utf-8")
-    return {**known, **got}
+def _refused() -> set[str]:
+    """"<hash>|<file>" Real-Debrid answered 451 infringing_file for in the last day: left out of the lists, as Torrentio
+    leaves out the torrents it saw refused. Whether a file starts at once is Torrentio's RD+ (its users' plays, no
+    Real-Debrid call per list: adding and deleting each file to check it, ~70 a day, preceded RD refusing every add for
+    hours on 2026-11-15)."""
+    return {k for k, (t, v) in _read(PROBED).items() if v == "refused" and time.time() - t < 86400}
 
 
 def streams(type_: str, sid: str, found: list[dict] | None = None) -> list[dict]:
@@ -281,18 +234,16 @@ def streams(type_: str, sid: str, found: list[dict] | None = None) -> list[dict]
     for q in stremio.QUALITIES:
         best = {}
         # Streamed to a phone: up to 20 Mbps first (a Remux's 45 stutters over mobile data), then the highest bitrate;
-        # AV1 last (the TV can't play it). Torrentio's RD+ only decides which ones get checked first.
+        # AV1 last (the TV can't play it).
         for c in sorted([c for c in found if q in stremio.qualities(c)], key=lambda c: (
                 c["cached"] is not True, stremio._mbps(c, minutes) > 20, "AV1" in stremio.tags(c), -stremio._mbps(c, minutes))):
             best.setdefault(c["file"], c)
         picked += [(q, c) for c in list(best.values())[:stremio.OPTIONS]]
-    # Probed in turns: each quality's first, then each one's second...
-    turns = sorted(range(len(picked)), key=lambda i: [q for q, _ in picked[:i]].count(picked[i][0]))
-    on = _on_rd(token, [picked[i][1] for i in turns])
+    refused = _refused()
     out = []
     for q, c in picked:
-        gb, now = c["gb"], on.get(f"{c['hash']}|{c['file']}")
-        if now == "refused":
+        gb, now = c["gb"], c["cached"]  # Torrentio's RD+ (True), its RD download (False), Comet's: not known (None)
+        if f"{c['hash']}|{c['file']}" in refused:
             continue
         size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1000:.0f} MB"
         note = "" if now else " · ⏳ Real-Debrid downloads it first" if now is False else " · ⏳ maybe not on Real-Debrid"
@@ -440,7 +391,7 @@ def _prepare_next(tv, person: str, lang: str, type_: str, nxt: str, h: str, file
     token = os.environ.get("RD_API_TOKEN", "")
     found = stremio.candidates(type_, nxt, token)
     pick = next((c for c in stremio.ranked(found, stremio._minutes(type_, nxt), h) if c["hash"] == h), None)
-    if pick and _on_rd(token, [pick]).get(f"{pick['hash']}|{pick['file']}") is not True:
+    if pick and (pick["cached"] is not True or f"{pick['hash']}|{pick['file']}" in _refused()):
         pick = None
     if not pick:
         q = next((q for q, pat in stremio.RESOLUTION.items() if re.search(pat, file.lower())), None)
