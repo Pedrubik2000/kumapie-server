@@ -153,8 +153,8 @@ def going(tv, person: str, lang: str = "ja") -> list[dict]:
             if not sid or f"seen|{person}|{lang}|{sid}" in done:
                 continue
             p = None
-        elif p <= 20:
-            continue
+        elif p <= 20:  # just opened: still that one, from the start
+            p = None
         try:
             t = _cached(f"title|{base}", 24, lambda: _title({"id": base, **(_json(
                 f"{KITSU if base.startswith('kitsu:') else stremio.META['tt']}/meta/{type_}/{base}.json").get("meta") or {})}))
