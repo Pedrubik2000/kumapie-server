@@ -23,6 +23,8 @@ episode is got ready the same way, in the background.
                                                        person's AniList Planning list first, then Kitsu's catalogs
                                                        (title: {"id", "type", "name", "poster", "year", "background",
                                                        "logo", "description", "genres", "rating", "runtime"})
+  GET  /api/discover/subs/<type>/<id>?file           a Jimaku file's lines, shown live while the episode is made:
+                                                       {"cues": [[start, end, text]], "name", "timed"}
   GET  /api/discover/saved?person                     the titles kept on Home: [{"id", "type", "name", "poster", "year"}]
   POST /api/discover/saved {"person", "id", "type", "name", "poster", "year", "on"}  keeps (on) / drops one -> the list
 """
@@ -359,6 +361,29 @@ def subtitles(url: str, show: str, season, number, file: str, tmp: Path, step, q
     return (tmp / "ja.srt").read_text(encoding="utf-8"), english, False
 
 
+def live_subs(type_: str, sid: str, file: str) -> dict:
+    """GET /api/discover/subs: a Jimaku file's lines for the app to show live while the episode is made (SubMiner's
+    way: no file read). The file made for this release when Jimaku has one, else its best-ranked file (the app
+    offers a nudge). {"cues": [[start, end, text]], "name", "timed"}; no cues when Jimaku has nothing."""
+    key = os.environ.get("JIMAKU_API_KEY", "")
+    if not key or not stremio.ID.match(sid):
+        return {"cues": [], "name": "", "timed": False}
+    about = stremio.meta(type_, sid)
+    season, number = stremio.numbers(sid)
+    found = json.loads(jobs.jimaku.candidates(key, about["name"], season, number, file))["files"][:4]
+    for f in sorted(found, key=lambda f: not _same_release(file, f["name"])):  # stable: Jimaku's order otherwise
+        try:
+            with tempfile.TemporaryDirectory(dir=cfg.work) as tmp:
+                raw = jobs.jimaku.download(key, f["url"], f["name"], number, tmp)
+                cues = json.loads(jobs.jimaku.cues(raw, "ja"))
+        except Exception as e:  # noqa: BLE001 - a zip without this episode: the next one
+            print(f"jimaku live {f['name']}: {e}", flush=True)
+            continue
+        if cues:
+            return {"cues": cues, "name": f["name"], "timed": _same_release(file, f["name"])}
+    return {"cues": [], "name": "", "timed": False}
+
+
 def _moved(a: str, b: str) -> float:
     """How far subtitle file [b]'s lines sit from [a]'s (median over lines with the same text, s)."""
     first = {t: s for s, _, t in subtitle_cues(a)}
@@ -424,7 +449,7 @@ def watch(tv, body: dict) -> dict:
         if job:
             return job
         job = _running[key] = {"state": "running", "step": "asking Real-Debrid", "error": "", "next": nxt,
-                               "prep": bool(body.get("prep"))}
+                               "prep": bool(body.get("prep")), "file": file}
 
     def run():
         token = os.environ.get("RD_API_TOKEN", "")

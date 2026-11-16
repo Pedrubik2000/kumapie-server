@@ -76,7 +76,7 @@ lock = threading.Lock()
 feed = {"clips": {}, "words": set(), "status": frozenset(), "levels": {}, "db_mtime": None}
 tts_lock = threading.Lock()
 tv = None  # TV(...) once segments() is defined
-DISCOVER = re.compile(r"^/api/discover/(meta|streams)/(movie|series)/((?:tt\d+|kitsu:\d+)(?::\d+)*)$")
+DISCOVER = re.compile(r"^/api/discover/(meta|streams|subs)/(movie|series)/((?:tt\d+|kitsu:\d+)(?::\d+)*)$")
 ADDON = re.compile(r"^/addon/(\w+)/(manifest\.json|stream/(movie|series)/((?:tt\d+|kitsu:\d+)(?::\d+)*)\.json)$")
 
 
@@ -415,6 +415,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(discover.board(qs.get("person", "")))
                 if m[1] == "meta":
                     return self.send_json(discover.meta(m[2], m[3], qs.get("person", ""), qs.get("lang", "ja")))
+                if m[1] == "subs":
+                    return self.send_json(discover.live_subs(m[2], m[3], qs.get("file", "")))
                 return self.send_json(discover.streams(m[2], m[3]))
             except (OSError, ValueError) as e:  # Kitsu, Torrentio unreachable: the reason on the phone
                 return self.send_error(502, str(e)[:200])
