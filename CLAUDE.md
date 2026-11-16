@@ -2,7 +2,7 @@
 
 kumapie's PC side (dojo-feed and its tools); see `README.md` for the map. Pedro studies on his phone and
 tablet; this PC is only a server. The app itself is `C:\dojo\kumapie-tv` (own repo); its plan is
-`C:\dojo\code\kumapie_plan.md`.
+`C:\dojo\code\plans\kumapie_plan.md`.
 
 - Paths and people come from `config.toml` (`dojo/config.py`, `cfg`); never hardcode one. Secrets in `.env`.
 - Run Python with `.venv\Scripts\python.exe` in UTF-8 mode (`PYTHONUTF8=1`).
