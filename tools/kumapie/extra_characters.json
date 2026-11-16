@@ -1,0 +1,15 @@
+{
+ "_": "Characters AniList doesn't list, by the show's Japanese title on AniList: [name, reading, romaji, role]. reading_characters.py adds them to bee_reading_*.zip.",
+ "薬屋のひとりごと": [
+  ["姚", "やお", "Yao", "Side Character"],
+  ["燕燕", "えんえん", "En'en", "Side Character"],
+  ["雀", "ちゅえ", "Chue", "Side Character"],
+  ["玉鶯", "ぎょくおう", "Gyokuou", "Side Character"],
+  ["桃美", "たおめい", "Taomei", "Side Character"],
+  ["玉袁", "ぎょくえん", "Gyokuen", "Side Character"],
+  ["克用", "こくよう", "Kokuyou", "Side Character"],
+  ["馬良", "ばりょう", "Baryou", "Side Character"],
+  ["麻美", "まーめい", "Maamei", "Side Character"],
+  ["劉", "りゅう", "Ryuu", "Side Character"]
+ ]
+}

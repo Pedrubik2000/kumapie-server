@@ -48,6 +48,47 @@ def _aliases(works: dict) -> dict[str, list[str]]:
     return {k: v for k, v in out.items() if v}
 
 
+HONORIFICS = {"さん": ("さん", "Generic polite suffix (Mr./Ms./Mrs.)"), "様": ("さま", "Very formal/respectful"),
+              "殿": ("どの", "Formal (lord)"), "ちゃん": ("ちゃん", "Endearing, for close friends or children")}
+
+
+def _bare(bank: list, consorts: set, terms: set) -> list:
+    """AniList names Kusuriya's consorts with their title (玉葉妃); the lines also say just 玉葉 (user, 2026-11-16):
+    every entry of such a name again without 妃 (玉葉, 玉葉さん, ...), where the dictionary has none."""
+    out = []
+    for t in bank:
+        i = t[0].find("妃")
+        w = t[0][:i] + t[0][i + 1:] if i > 0 and t[0][:i] in consorts else None
+        if w and w not in terms:
+            terms.add(w)
+            out.append([w, *t[1:]])
+    return out
+
+
+def _extra(terms: set) -> list:
+    """Characters AniList doesn't have (extra_characters.json), shaped like Bee's entries: kumapie reads the name, its
+    "name-romaji" line, an honorific's own first line and "From: <title>" (that show's faces and names)."""
+    src = json.loads(Path(__file__).with_name("extra_characters.json").read_text(encoding="utf-8"))
+    out = []
+    for title, people in src.items():
+        if title == "_":
+            continue
+        for name, reading, romaji, role in people:
+            body = [{"tag": "div", "content": name, "data": {"id": "name"}, "style": {"fontSize": "1.2em", "fontWeight": "bold"}},
+                    {"tag": "div", "content": romaji, "data": {"id": "name-romaji"}, "style": {"color": "#666", "fontStyle": "italic"}},
+                    {"tag": "div", "data": {"id": "role-container"}, "content": [
+                        {"tag": "span", "content": role, "data": {"id": "role"}},
+                        {"tag": "span", "content": f" From: {title}", "data": {"id": "source"}}]}]
+            forms = [(name, reading, [])] + [
+                (name + h, reading + kana, [{"tag": "div", "content": [{"tag": "span", "content": h}, {"tag": "span", "content": f" — {why}"}]}])
+                for h, (kana, why) in HONORIFICS.items()]
+            for w, r, head in forms:
+                if w not in terms:
+                    terms.add(w)
+                    out.append([w, r, "name side", "", 50, [{"type": "structured-content", "content": head + body}], 0, ""])
+    return out
+
+
 def main(force: bool) -> None:
     ids = characters.ids()
     d = characters.load()
@@ -77,9 +118,16 @@ def main(force: bool) -> None:
     aliases = _aliases(d["works"])
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
     out = OUT / f"bee_reading_{stamp}.zip"
-    with zipfile.ZipFile(tmp) as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
-        for item in src.infolist():
-            data = src.read(item.filename)
+    part = OUT / f"bee_reading_{stamp}.zip.tmp"  # the devices list *.zip: never a half-written one
+    with zipfile.ZipFile(tmp) as src, zipfile.ZipFile(part, "w", zipfile.ZIP_DEFLATED) as dst:
+        banks = [i.filename for i in src.infolist() if i.filename.startswith("term_bank_")]
+        terms = {t[0] for b in banks for t in json.loads(src.read(b))}
+        consorts = {w[:-1] for w in terms if w.endswith("妃") and len(w) > 2 and w[:-1] not in terms}  # 玉葉妃 -> 玉葉
+        extra = [t for b in banks for t in _bare(json.loads(src.read(b)), consorts, terms)] + _extra(terms)
+        items = src.infolist() + ([zipfile.ZipInfo("term_bank_9999.json")] if extra else [])
+        for item in items:
+            data = src.read(item.filename) if item.filename != "term_bank_9999.json" else \
+                json.dumps(extra, ensure_ascii=False).encode()
             if item.filename == "index.json":
                 index = json.loads(data)
                 index["title"] = TITLE
@@ -94,8 +142,9 @@ def main(force: bool) -> None:
                 for native, works in aliases.items():
                     text = text.replace(f"From: {native}\"", f"From: {native} ({' / '.join(works)})\"")
                 data = text.encode("utf-8")
-            dst.writestr(item, data)
+            dst.writestr(item, data, zipfile.ZIP_DEFLATED)
     tmp.unlink()
+    part.replace(out)
     for old in have:
         try:
             old.unlink()
