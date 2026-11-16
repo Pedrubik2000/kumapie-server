@@ -277,10 +277,12 @@ def streams(type_: str, sid: str, found: list[dict] | None = None) -> list[dict]
         gb, now = c["gb"], on.get(f"{c['hash']}|{c['file']}")
         size = f"{gb:.1f} GB" if gb >= 1 else f"{gb * 1000:.0f} MB"
         note = "" if now else " · ⏳ Real-Debrid downloads it first" if now is False else " · ⏳ maybe not on Real-Debrid"
-        out.append({"q": q, "label": ("▶ starts now · " if now else "") + f"{q} · {size} · {stremio._mbps(c, minutes):.1f} Mbps{note}",
-                    "about": stremio.about(c).strip(), "hash": c["hash"], "file": c["file"], "idx": c["idx"], "now": bool(now)})
-    out.sort(key=lambda s: not s["now"])  # stable: in quality order within each
-    return out
+        mbps = stremio._mbps(c, minutes)
+        out.append(((not now, bool(now) and mbps > 20), {
+            "q": q, "label": ("▶ starts now · " if now else "") + f"{q} · {size} · {mbps:.1f} Mbps{note}",
+            "about": stremio.about(c).strip(), "hash": c["hash"], "file": c["file"], "idx": c["idx"], "now": bool(now)}))
+    # Starts-now first, and among those up to 20 Mbps first (a 38 Mbps FLAC remux topped a 1.5 Mbps file); stable: quality order.
+    return [s for _, s in sorted(out, key=lambda t: t[0])]
 
 
 def _direct(token: str, h: str, file: str, idx: int, step) -> str:
