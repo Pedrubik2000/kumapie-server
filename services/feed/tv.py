@@ -526,6 +526,26 @@ class TV:
         """The language a person reads titles and descriptions in: their libraries' translation (Pedro: English)."""
         return next((cfg.people[k].translation for k in people if k in cfg.people and cfg.people[k].translation != "en"), "en")
 
+    _works: dict[str, str] = {}
+
+    @classmethod
+    def stream_work(cls, name: str) -> str:
+        """A stream's show (Stremio's name, "Dandadan") -> its Japanese title on AniList (ダンダダン), "" when none fits:
+        a stream has no show meta, and without a title kumapie put any show's face on a name (Watamote's ウチ in
+        Dandadan, user 2026-11-16)."""
+        if name not in cls._works:
+            key = lambda t: re.sub(r"[\W_]", "", (t or "").lower())  # noqa: E731
+            try:
+                found = showmeta._anilist("query($s:String){Page(perPage:5){media(search:$s,type:ANIME)"
+                                          "{title{romaji english native} synonyms}}}", {"s": name})["Page"]["media"]
+            except Exception as e:  # noqa: BLE001 - offline: no face filter this time, asked again on the next open
+                log(f"stream work for {name}: {e}")
+                return ""
+            n = key(name)
+            cls._works[name] = next((m["title"]["native"] or "" for m in found if n and any(
+                k and (n in k or k in n) for k in map(key, [m["title"]["romaji"], m["title"]["english"], *(m["synonyms"] or [])]))), "")
+        return cls._works[name]
+
     @staticmethod
     def show_meta(show: str) -> dict | None:
         try:
@@ -627,7 +647,8 @@ class TV:
             "lang": LANG.get(ep["person"], PERSON.transcript), "novel": ep.get("novel", False),
             **({"srs": True} if on else {}),
             # The show's Japanese title (AniList): kumapie puts faces only on this work's characters.
-            "work": ((self.show_meta(ep["show"]) or {}).get("title") or {}).get("ja", ""),
+            "work": ((self.show_meta(ep["show"]) or {}).get("title") or {}).get("ja", "")
+                    or (self.stream_work(ep["show_title"]) if ep["kind"] == "stream" else ""),
             "video": f"/api/tv/video/{eid}", "resume": row[0] if row else None,
             "scenes": [{"id": sc["id"], "i": sc["i"], "start": sc["start"], "end": sc["end"],
                         "german": sc["german"], "level": self.level(sc, status) if sc["german"] and not theirs else None,
