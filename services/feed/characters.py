@@ -78,6 +78,18 @@ def add(works: list[str]) -> dict:
         return {"added": len(new)}
 
 
+def add_media(work: str, media: list[str]) -> None:
+    """A show kumapie streams or keeps on Home ("Dandadan" -> ["ANIME:171018", ...]): its characters join the same
+    dictionary, so their faces show in its episodes (user, 2026-11-16: no face for Ayase in Dandadan)."""
+    with _lock:
+        d = load()
+        if not media or d["works"].get(work) == media:
+            return
+        d["works"][work] = media
+        _save(d)
+    build()
+
+
 def build() -> None:
     """Starts the dojo-reading-characters task (reading_characters.py under Pedro's account: WSL isn't this service's).
     kumapie picks the new dictionary up on its next start."""

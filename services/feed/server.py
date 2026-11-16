@@ -649,7 +649,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/discover/saved":  # a Discover title kept on Home (or dropped)
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-                return self.send_json(discover.saved(str(body.get("person") or ""), body))
+                mine = discover.saved(str(body.get("person") or ""), body)
+                if body.get("on") and body.get("name"):  # its characters' faces before the first episode (tv.stream_work)
+                    threading.Thread(target=TV.stream_work, args=(str(body["name"]),), daemon=True).start()
+                return self.send_json(mine)
             except ValueError as e:
                 return self.send_error(400, str(e)[:200])
         if path == "/api/tv/watch":

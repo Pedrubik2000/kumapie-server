@@ -62,6 +62,7 @@ import urllib.request
 from pathlib import Path
 
 from dojo import cfg
+import characters
 import dicts
 import known
 import srs
@@ -537,13 +538,16 @@ class TV:
             key = lambda t: re.sub(r"[\W_]", "", (t or "").lower())  # noqa: E731
             try:
                 found = showmeta._anilist("query($s:String){Page(perPage:5){media(search:$s,type:ANIME)"
-                                          "{title{romaji english native} synonyms}}}", {"s": name})["Page"]["media"]
+                                          "{id title{romaji english native} synonyms}}}", {"s": name})["Page"]["media"]
             except Exception as e:  # noqa: BLE001 - offline: no face filter this time, asked again on the next open
                 log(f"stream work for {name}: {e}")
                 return ""
             n = key(name)
-            cls._works[name] = next((m["title"]["native"] or "" for m in found if n and any(
-                k and (n in k or k in n) for k in map(key, [m["title"]["romaji"], m["title"]["english"], *(m["synonyms"] or [])]))), "")
+            fits = [m for m in found if n and any(
+                k and (n in k or k in n) for k in map(key, [m["title"]["romaji"], m["title"]["english"], *(m["synonyms"] or [])]))]
+            cls._works[name] = (fits[0]["title"]["native"] or "") if fits else ""
+            # Its characters (every season that fits) into the characters' dictionary: their faces and names.
+            characters.add_media(name, [f"ANIME:{m['id']}" for m in fits])
         return cls._works[name]
 
     @staticmethod
