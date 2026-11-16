@@ -9,7 +9,8 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
                           dictionary meanings
   /clips/<id>.mp4         the clip's episode video, with HTTP Range (the page plays start..end of it)
   /api/tts?w=<word>       the word read by edge-tts (only words in the feed), cached in state\\feed\\tts\\
-  POST /api/tv/known_words  {"person", "lang", "words"}: the words kumapie shows as known (known.py)
+  POST /api/tv/known_words  {"person", "lang", "device", "words"}: the words a device shows as known (known.py)
+  POST /api/tv/known_lists  {"person", "lang", "imported"}: a device's Jiten import -> the newest of all its devices' (known.py)
   POST /api/tv/personal  {"person", "entries"}: a device's personal dictionary -> the merged one (personal.py)
   GET  /api/tv/known_words?person=&lang=   those words (kumadeck on the Steam Deck)
   POST /api/tv/device_seen  {"person", "seen", "unwatched"}: what the person's phones count as seen (tv.py)
@@ -679,7 +680,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(anilist.sync(tv, log))
             except (ValueError, OSError) as e:
                 return self.send_json({"error": str(e)[:200]})
-        if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words",
+        if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words", "/api/tv/known_lists",
                         "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark", "/api/tv/personal",
                         "/api/tv/srs/add", "/api/tv/srs/rate", "/api/tv/srs/undo"):
             return self.send_error(404)
@@ -718,6 +719,8 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("scene") is not None and tv.person_of(scene=str(body["scene"]), viewer=body.get("person")) not in tv.marks_people():
                     raise ValueError("marks for this person aren't kept on the PC")
                 return self.send_json(mark_known(str(body.get("word", "")), bool(body.get("known"))))
+            if path == "/api/tv/known_lists":
+                return self.send_json(known.lists(body))
             if path == "/api/tv/known_words":
                 done = known.save(body)
                 log(f"known words: {done['key']} {done['n']}")
