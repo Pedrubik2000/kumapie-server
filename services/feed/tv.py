@@ -109,6 +109,34 @@ def said(ep: dict) -> set[str]:
             if not (sc["cues"] and all(c["seg"] and c["seg"][0][0].startswith("♪") for c in sc["cues"]))}
 
 
+def by_line(ep: dict) -> None:
+    """The subtitle line is kumapie's only unit ("no more scenes"): an episode read with several lines in a scene
+    (feed.db, a .kumapie.json made before 2026-11-17) gets one scene per line, in the order they are said. Such a
+    line's id is "<scene>:<its place in it>", so what was kept by scene (seen, lookups, PC cards) still finds its
+    lines ([parent]); a scene of one line (what newepisode.build writes now) stays as it is. A novel is by lines already."""
+    if ep.get("novel") or all(len(sc["cues"]) <= 1 for sc in ep["scenes"]):
+        return
+    out = []
+    for sc in ep["scenes"]:
+        if len(sc["cues"]) <= 1:
+            out.append(sc)
+            continue
+        for i, c in enumerate(sc["cues"]):
+            out.append({**sc, "id": f"{sc['id']}:{i}", "start": c["start"], "end": c["end"], "cues": [c],
+                        "english": [e for e in sc["english"] if len(e) > 2 and e[0] < c["end"] and e[1] > c["start"]],
+                        "infl": {seg[1] for seg in c["seg"] if seg[1]}})
+    out.sort(key=lambda sc: sc["start"])
+    for n, sc in enumerate(out):
+        sc["i"] = n
+    ep["scenes"] = out
+    ep.pop("need", None)
+
+
+def parent(scene: str) -> str:
+    """The scene a line was cut from ([by_line]); itself otherwise."""
+    return scene.split(":")[0]
+
+
 def need(ep: dict) -> list:
     """The time of an episode's spoken lines (ranges.spoken), worked out once: what "watched" has to cover."""
     if "need" not in ep:
@@ -257,6 +285,7 @@ class TV:
                         lemmas.setdefault(infl, lemma)
         for ep in episodes.values():
             ep["gloss"] = {i: dicts.look("de-en", lemmas.get(i, ""), i) for i in ep["infl"]}
+            by_line(ep)
         self.episodes, self.words, self.lemmas = episodes, words, lemmas
         with self.synced_lock:
             self.scanned = None  # the libraries' episodes join again on the next request
@@ -329,6 +358,8 @@ class TV:
             for e in episodes.values():
                 if len(langs[e["show"]]) > 1:
                     e["show"] = f"{e['show']}_{LANG.get(e['person'])}"
+            for e in episodes.values():
+                by_line(e)
             self.episodes, self.words, self.lemmas = episodes, words, lemmas
             self.parsed = parsed
             self.per_person()  # before [scanned]: a request that skips the scan must find the new tables
@@ -360,12 +391,15 @@ class TV:
                 log(f"tv.db: progress per person ({len(pos)} positions, {len(seen)} scenes, {len(unw)} not watched)")
             if db.execute("pragma user_version").fetchone()[0] < 2:
                 # Once: the scenes seen on the TV become watched time ranges, before the scenes go ("no more scenes").
-                at = {sc["id"]: sc for ep in self.episodes.values() for sc in ep["scenes"]}
+                at: dict[str, list] = {}
+                for ep in self.episodes.values():
+                    for sc in ep["scenes"]:
+                        at.setdefault(parent(sc["id"]), []).append([sc["start"] * 1000, sc["end"] * 1000])
                 unw = {(p, e): t for p, e, t in db.execute("select person, episode, at from unwatched")}
                 spans: dict[tuple, list] = {}
                 for p, scene, eid, last in db.execute("select person, scene, episode, last from seen"):
                     if scene in at and datetime.datetime.fromisoformat(last).timestamp() > unw.get((p, eid), 0):
-                        spans.setdefault((p, eid), []).append([at[scene]["start"] * 1000, at[scene]["end"] * 1000])
+                        spans.setdefault((p, eid), []).extend(at[scene])
                 db.executemany("insert or ignore into ranges values (?, ?, ?, ?)",
                                [(p, e, int(time.time()), json.dumps(ranges.union(sp))) for (p, e), sp in spans.items()])
                 db.execute("pragma user_version = 2")
@@ -398,7 +432,7 @@ class TV:
     def person_of(self, eid: str = "", scene: str = "", viewer: str | None = None) -> str:
         """The library key an episode (or a scene's episode) counts for: the viewer's in its language ([key_for]), else
         its owner's; the feed person's when unknown."""
-        ep = self.episodes.get(eid) or next((e for e in self.episodes.values() if any(sc["id"] == scene for sc in e["scenes"])), None) \
+        ep = self.episodes.get(eid) or next((e for e in self.episodes.values() if any(scene in (sc["id"], parent(sc["id"])) for sc in e["scenes"])), None) \
             if scene else self.episodes.get(eid)
         return self.key_for(ep["id"], viewer) if ep else F["person"]
 
@@ -525,6 +559,7 @@ class TV:
         """An episode's scenes and how many were seen, without the lyrics of its opening and ending (every line "♪ ...",
         kumapie's Scene.song): skipping the songs must not keep an episode unwatched."""
         said_ = said(ep)
+        seen = {sc for sc in said_ if sc in seen or parent(sc) in seen}
         # "watched": by time ranges, or (a build that still sends scene ids) every scene seen.
         watched = ranges.watched(need(ep), spans) or (bool(said_) and said_ <= set(seen))
         # Watched by ranges: every scene counts as seen, so a device on a build that still counts scenes shows it too.
@@ -712,7 +747,7 @@ class TV:
             "video": f"/api/tv/video/{eid}", "resume": row[0] if row else None, "ranges": spans,
             "scenes": [{"id": sc["id"], "i": sc["i"], "start": sc["start"], "end": sc["end"],
                         "german": sc["german"], "level": self.level(sc, status) if sc["german"] and not theirs else None,
-                        "seen": sc["id"] in seen,
+                        "seen": sc["id"] in seen or parent(sc["id"]) in seen,
                         "cues": [{"start": c["start"], "end": c["end"], "seg": c["seg"]} for c in sc["cues"]],
                         "english": sc["english"], "g": fits.get(sc["id"], {}),
                         **({"bgm": f"/api/tv/file/{eid}/{sc['bgm']}"} if sc.get("bgm") else {}),
@@ -883,7 +918,7 @@ class TV:
                        (word, scene, datetime.datetime.now().isoformat(timespec="seconds"), person))
             n = db.execute("select count(*) from lookups where word = ? and person = ?", (word, person)).fetchone()[0]
         # Every sense, for the PC page's word card (the TV and phones show their own)
-        ep = next((e for e in self.episodes.values() if any(sc["id"] == scene for sc in e["scenes"])), None) if scene else None
+        ep = next((e for e in self.episodes.values() if any(scene in (sc["id"], parent(sc["id"])) for sc in e["scenes"])), None) if scene else None
         _kana, ss = dicts.senses(ep["pair"], self.lemmas.get(word, ""), word) if ep and ep.get("pair") else ("", [])
         return {"ok": True, "n": n, "senses": ss}
 
@@ -921,7 +956,7 @@ class TV:
         self.synced()
         scene = body.get("scene")
         if scene is not None:
-            ep = next((e for e in self.episodes.values() if any(sc["id"] == scene for sc in e["scenes"])), None)
+            ep = next((e for e in self.episodes.values() if any(scene in (sc["id"], parent(sc["id"])) for sc in e["scenes"])), None)
             key = self.key_for(ep["id"], body.get("person")) if ep else None
         else:
             key = sync.PEOPLE.get(str(body.get("person")), {}).get(str(body.get("lang")))
@@ -935,7 +970,7 @@ class TV:
         return srs.add(key, ep, body["scene"], body.get("line"), body.get("word"), body.get("meaning"))
 
     def person_ep(self, scene: str) -> str:
-        return next(e["id"] for e in self.episodes.values() if any(sc["id"] == scene for sc in e["scenes"]))
+        return next(e["id"] for e in self.episodes.values() if any(scene in (sc["id"], parent(sc["id"])) for sc in e["scenes"]))
 
     def history(self, person: str | None = None) -> dict:
         """Everything the TV (and the phone, before 2026-10-06) recorded, in kumapie's progress format. Another

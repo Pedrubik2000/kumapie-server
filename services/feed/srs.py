@@ -108,10 +108,19 @@ def set_known(key: str, word: str, on: bool) -> dict:
     return {"s": "k" if word in ks or (card and state_of(card) in "kd") else "u"}
 
 
+def line_of(ep: dict, scene, line) -> tuple:
+    """(the episode's scene, the line in it) a device means. An episode is one scene per line now (tv.by_line), its
+    id "<old scene>:<line>": a copy a device downloaded before still names the old scene and the line in it."""
+    sc = next((s for s in ep["scenes"] if s["id"] == scene), None)
+    if sc or not isinstance(line, int):
+        return sc, line
+    return next((s for s in ep["scenes"] if s["id"] == f"{scene}:{line}"), None), 0
+
+
 def add(key: str, ep: dict, scene: str, line: int, word: str, meaning: str) -> dict:
     """Mines a word from a scene's line. ValueError when the scene, line or word don't fit."""
     _word(word)
-    sc = next((s for s in ep["scenes"] if s["id"] == scene), None)
+    sc, line = line_of(ep, scene, line)
     if not sc or not isinstance(line, int) or isinstance(line, bool) or not 0 <= line < len(sc["cues"]):
         raise ValueError("unknown scene or line")
     if word not in ep["infl"]:
@@ -211,6 +220,9 @@ def audio(key: str, word: str, video: Path | None, ffmpeg: str) -> Path | None:
 if __name__ == "__main__":  # self-check in a temporary folder
     import tempfile
     DIR = Path(tempfile.mkdtemp())
+    assert line_of({"scenes": [{"id": "a:0"}, {"id": "a:1"}, {"id": "b"}]}, "a", 1) == ({"id": "a:1"}, 0)
+    assert line_of({"scenes": [{"id": "a:0"}, {"id": "b"}]}, "b", 0) == ({"id": "b"}, 0)
+    assert line_of({"scenes": [{"id": "a:0"}]}, "zz", 0) == (None, 0)
     ep = {"id": "e1", "infl": {"know", "this"}, "scenes": [{"id": "s1", "english": [[0, 5, "Lo sabemos"]], "cues": [
         {"start": 1.0, "end": 3.0, "seg": [["We", "we"], [" ", None], ["know", "know"]]}]}]}
     assert add("k", ep, "s1", 0, "know", "saber") == {"c": "b"}

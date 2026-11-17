@@ -189,8 +189,8 @@ def mine(ep: dict, video: Path, ffmpeg: str, word_audio, body: dict) -> dict:
     lang = ep["lang"]
     if lang not in DECKS:
         raise ValueError("no Mined deck for " + lang)
-    sc = next((s for s in ep["scenes"] if s["id"] == body.get("scene")), None)
-    line = int(body.get("line", 0))
+    import srs  # here: only this needs it
+    sc, line = srs.line_of(ep, body.get("scene"), int(body.get("line", 0)))
     if not sc or not 0 <= line < len(sc["cues"]):
         raise ValueError("unknown scene or line")
     models = ac("modelNames")
@@ -256,7 +256,8 @@ def mine(ep: dict, video: Path, ffmpeg: str, word_audio, body: dict) -> dict:
     fields["Sentence"] = esc(text) if at < 0 else (esc(text[:at]) + "<b>" + esc(surface) + (f"[{esc(reading)}]" if reading else "")
                                                      + "</b>" + esc(text[at + len(surface):]))
     fields["Notes"] = esc(str(body.get("english") or english(sc, cues)))
-    fields["Context"] = esc(f"Mined in kumapie: {ep['show']} · {ep['title']}, scene {sc['i'] + 1}.")
+    secs = int(sc["cues"][line]["start"])  # the line's time, as the app writes it (lang/Miner.kt): a subtitle fix can't lose it
+    fields["Context"] = esc(f"Mined in kumapie: {ep['show']} · {ep['title']}, at {secs // 60}:{secs % 60:02d}.")
     missing = [f for f in ["Sentence"] + ([DEF_BI] if word else []) if f not in names]
     if missing:
         raise ValueError(f"{model} has no field {', '.join(missing)}")
