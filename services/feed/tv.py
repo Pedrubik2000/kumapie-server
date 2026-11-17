@@ -526,8 +526,9 @@ class TV:
         kumapie's Scene.song): skipping the songs must not keep an episode unwatched."""
         said_ = said(ep)
         # "watched": by time ranges, or (a build that still sends scene ids) every scene seen.
-        return {"scenes": len(said_), "seen": len(said_ & set(seen)),
-                "watched": ranges.watched(need(ep), spans) or (bool(said_) and said_ <= set(seen))}
+        watched = ranges.watched(need(ep), spans) or (bool(said_) and said_ <= set(seen))
+        # Watched by ranges: every scene counts as seen, so a device on a build that still counts scenes shows it too.
+        return {"scenes": len(said_), "seen": len(said_) if watched else len(said_ & set(seen)), "watched": watched}
 
     def shows(self, status_of, person: str | None = None) -> dict:
         """[status_of]: a library person's known words (None: their phone never sent any)."""
