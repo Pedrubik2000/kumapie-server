@@ -110,11 +110,16 @@ def set_known(key: str, word: str, on: bool) -> dict:
 
 def line_of(ep: dict, scene, line) -> tuple:
     """(the episode's scene, the line in it) a device means. An episode is one scene per line now (tv.by_line), its
-    id "<old scene>:<line>": a copy a device downloaded before still names the old scene and the line in it."""
+    id "<old scene>:<place of its first cue there>": a copy a device downloaded before still names the old scene and
+    the cue's place in it."""
     sc = next((s for s in ep["scenes"] if s["id"] == scene), None)
     if sc or not isinstance(line, int):
         return sc, line
-    return next((s for s in ep["scenes"] if s["id"] == f"{scene}:{line}"), None), 0
+    for s in ep["scenes"]:
+        old, _, first = s["id"].partition(":")
+        if old == scene and first.isdigit() and int(first) <= line < int(first) + len(s["cues"]):
+            return s, line - int(first)
+    return None, 0
 
 
 def add(key: str, ep: dict, scene: str, line: int, word: str, meaning: str) -> dict:
@@ -220,9 +225,10 @@ def audio(key: str, word: str, video: Path | None, ffmpeg: str) -> Path | None:
 if __name__ == "__main__":  # self-check in a temporary folder
     import tempfile
     DIR = Path(tempfile.mkdtemp())
-    assert line_of({"scenes": [{"id": "a:0"}, {"id": "a:1"}, {"id": "b"}]}, "a", 1) == ({"id": "a:1"}, 0)
-    assert line_of({"scenes": [{"id": "a:0"}, {"id": "b"}]}, "b", 0) == ({"id": "b"}, 0)
-    assert line_of({"scenes": [{"id": "a:0"}]}, "zz", 0) == (None, 0)
+    two = {"scenes": [{"id": "a:0", "cues": [1, 2]}, {"id": "a:2", "cues": [3]}, {"id": "b", "cues": [4]}]}
+    assert line_of(two, "a", 1) == (two["scenes"][0], 1) and line_of(two, "a", 2) == (two["scenes"][1], 0)
+    assert line_of(two, "b", 0) == (two["scenes"][2], 0) and line_of(two, "a:0", 1) == (two["scenes"][0], 1)
+    assert line_of(two, "zz", 0) == (None, 0) and line_of(two, "a", 3) == (None, 0)
     ep = {"id": "e1", "infl": {"know", "this"}, "scenes": [{"id": "s1", "english": [[0, 5, "Lo sabemos"]], "cues": [
         {"start": 1.0, "end": 3.0, "seg": [["We", "we"], [" ", None], ["know", "know"]]}]}]}
     assert add("k", ep, "s1", 0, "know", "saber") == {"c": "b"}

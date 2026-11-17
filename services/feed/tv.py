@@ -111,20 +111,24 @@ def said(ep: dict) -> set[str]:
 
 def by_line(ep: dict) -> None:
     """The subtitle line is kumapie's only unit ("no more scenes"): an episode read with several lines in a scene
-    (feed.db, a .kumapie.json made before 2026-11-17) gets one scene per line, in the order they are said. Such a
-    line's id is "<scene>:<its place in it>", so what was kept by scene (seen, lookups, PC cards) still finds its
-    lines ([parent]); a scene of one line (what newepisode.build writes now) stays as it is. A novel is by lines already."""
-    if ep.get("novel") or all(len(sc["cues"]) <= 1 for sc in ep["scenes"]):
+    (feed.db, a .kumapie.json made before 2026-11-17) gets one scene per line, in the order they are said. Pieces
+    shown together are one line ([ranges.together]: a subtitle cut into several cues with the same start, 355 of
+    675 cues in a Kusuriya stream). A line's id is "<scene>:<its first cue's place in it>", so what was kept by
+    scene (seen, lookups, PC cards) still finds its lines ([parent], srs.line_of); a scene that is one line already
+    (what newepisode.build writes now) stays as it is. A novel is by lines already."""
+    if ep.get("novel"):
         return
     out = []
     for sc in ep["scenes"]:
-        if len(sc["cues"]) <= 1:
+        groups = ranges.together(sc["cues"])
+        if len(groups) <= 1:
             out.append(sc)
             continue
-        for i, c in enumerate(sc["cues"]):
-            out.append({**sc, "id": f"{sc['id']}:{i}", "start": c["start"], "end": c["end"], "cues": [c],
-                        "english": [e for e in sc["english"] if len(e) > 2 and e[0] < c["end"] and e[1] > c["start"]],
-                        "infl": {seg[1] for seg in c["seg"] if seg[1]}})
+        for i, cues in groups:
+            start, end = cues[0]["start"], max(c["end"] for c in cues)
+            out.append({**sc, "id": f"{sc['id']}:{i}", "start": start, "end": end, "cues": cues,
+                        "english": [e for e in sc["english"] if len(e) > 2 and e[0] < end and e[1] > start],
+                        "infl": {seg[1] for c in cues for seg in c["seg"] if seg[1]}})
     out.sort(key=lambda sc: sc["start"])
     for n, sc in enumerate(out):
         sc["i"] = n

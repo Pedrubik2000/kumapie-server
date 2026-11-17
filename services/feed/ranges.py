@@ -8,6 +8,7 @@ Self-check: python ranges.py
 from __future__ import annotations
 
 JOIN_MS = 1_000    # ranges closer than this are one (a seek's rounding, a player tick)
+SAME_S = 0.05      # cues that start within this of each other are one line (seconds); the app: Api.kt SAME
 SLACK = 0.03       # an episode is watched when at most this share of its spoken time is missing
 
 
@@ -43,6 +44,18 @@ def spoken(cues) -> list[list[int]]:
     return union([a * 1000, b * 1000] for a, b in cues)
 
 
+def together(cues) -> list:
+    """Cues shown together are one line: [(place of its first cue, its cues)], cues in order. Together = the same
+    start (SAME_S): downloaded subtitles cut one subtitle into pieces (a name, a thought in 《》, each row of it)."""
+    out: list = []
+    for i, c in enumerate(cues):
+        if out and abs(c["start"] - out[-1][1][0]["start"]) < SAME_S:
+            out[-1][1].append(c)
+        else:
+            out.append((i, [c]))
+    return out
+
+
 def watched(need, have) -> bool:
     size = sum(b - a for a, b in need)
     return size > 0 and missing(need, have) <= size * SLACK
@@ -59,4 +72,6 @@ if __name__ == "__main__":
     assert watched(need, [[95000, 600000], [700000, 720000]])       # 5 s missing of 520 s
     assert not watched(need, [[90000, 600000]])                      # the last line never played
     assert not watched([], [[0, 1000]])
+    c = lambda a, b: {"start": a, "end": b}
+    assert together([c(1, 2), c(1, 2.5), c(2.6, 3), c(2.62, 3), c(9, 10)]) == [(0, [c(1, 2), c(1, 2.5)]), (2, [c(2.6, 3), c(2.62, 3)]), (4, [c(9, 10)])]
     print("ok")
