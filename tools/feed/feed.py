@@ -6,8 +6,6 @@
   feed.py gloss --limit 20          gloss a few clips (random) and print the result, to check the prompt
   feed.py gloss                     gloss every clip that has none yet (paid: ask Pedro first)
   feed.py show [ID]                 print a clip (random if no id) as the service sees it
-  feed.py scenes [--only TEXT] [--print]
-                                    split whole episodes into scenes for the TV app (kumapie-tv), no cutting
   feed.py export DIR [--scenes]     clips (or scenes) still without glosses, as JSON batches to gloss in a session
   feed.py export-defs DIR [--only TEXT]
                                     per-line definitions for the TV (definitions v2): the red/orange words of
@@ -316,118 +314,11 @@ def cmd_build(args) -> None:
     log(f"done: {n} clips")
 
 
-# ---------------------------------------------------------------- scenes (kumapie-tv, plan: kumapie_tv_plan.md)
-# Whole episodes split into scenes for the TV app: the same exchanges() as the clips, but every one is
-# kept (short ones, and non-German ones flagged german = 0). A scene's id is made like a clip's, so a feed
-# clip IS a scene and its glosses serve both. Cue and English times are episode times (not relative), as
-# the TV plays the whole file and seeks. Nothing is cut.
-
-def episode_of(video: Path, library: Path) -> tuple:
-    """(kind, show folder, show title, episode title, season, episode) of a video."""
-    rel = video.relative_to(library)
-    show = rel.parts[1] if len(rel.parts) > 2 else video.stem
-    show_title = re.sub(r" · .*", "", title_of(video, library))
-    ep = re.search(r"_s(\d+)_(\d+)$", video.stem)
-    season, number = (int(ep.group(1)), int(ep.group(2))) if ep else (None, None)
-    title = (f"Episode {number}" if season == 1 else f"S{season} E{number}") if ep else ""
-    return rel.parts[0], show, show_title, title, season, number
-
-
-def duration_of(video: Path) -> float:
-    r = subprocess.run([cfg.which("ffprobe"), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
-                        str(video)], capture_output=True, text=True)
-    return round(float(r.stdout.strip() or 0), 3)
-
-
-def scenes_of(video: Path, library: Path) -> list[tuple]:
-    """[(id, idx, start, end, german, [english [start, end, text]], cues)] for every exchange of a video."""
-    cues = read_srt(video.with_suffix(".srt"))
-    en_path = video.with_name(f"{video.stem}.{cfg.person(PERSON).translation}.srt")
-    english = read_srt(en_path) if en_path.exists() else []
-    source = video.relative_to(library).as_posix()
-    out = []
-    for i, (p, start, end) in enumerate(exchanges(cues)):
-        en = [[round(e.start, 3), round(e.end, 3), re.sub(r"\s*\([^)]*\)", "", e.text).strip()]
-              for e in english if p[0].start <= (e.start + e.end) / 2 <= p[-1].end]
-        is_german = german(" ".join(c.text for c in p), " ".join(e[2] for e in en))
-        sid = hashlib.sha1(f"{source}|{start:.3f}|{end:.3f}".encode()).hexdigest()[:12]
-        out.append((sid, i, start, end, int(is_german), en, p))
-    return out
-
-
-def cmd_scenes(args) -> None:
-    need(cfg.raw["morphs"]["spacy_model"], cfg.python)
-    library = cfg.library(PERSON)
-    videos = sorted(v for v in library.rglob("*.mp4") if v.with_suffix(".srt").exists())
-    if args.only:
-        videos = [v for v in videos if args.only.lower() in v.as_posix().lower()]
-    db = connect()
-    parse, settings = make_parser()
-    if db.execute("select value from meta where key = 'scene_parse'").fetchone() != (settings,):
-        db.execute("delete from scene_cues")
-        db.execute("insert or replace into meta values ('scene_parse', ?)", (settings,))
-    have = {r[0] for r in db.execute("select distinct scene_id from scene_cues")}
-    clip_ids = {r[0] for r in db.execute("select id from clips")}
-
-    wanted: dict[str, tuple] = {}
-    sources = set()
-    for v in videos:
-        source = v.relative_to(library).as_posix()
-        sources.add(source)
-        row = db.execute("select duration from episodes where source = ?", (source,)).fetchone()
-        duration = row[0] if row and row[0] else duration_of(v)  # titles are refreshed every run, the length once
-        db.execute("insert or replace into episodes values (?, ?, ?, ?, ?, ?, ?, ?)",
-                   (source, *episode_of(v, library), duration))
-        for s in scenes_of(v, library):
-            wanted[s[0]] = (source, *s)
-    log(f"{len(videos)} videos, {len(wanted)} scenes ({sum(w[5] for w in wanted.values())} German)")
-
-    # Gone: videos removed or re-timed (only within what this run looked at, with --only).
-    gone_src = [] if args.only else [r[0] for r in db.execute("select source from episodes") if r[0] not in sources]
-    for src in gone_src:
-        db.execute("delete from episodes where source = ?", (src,))
-    gone = [sid for sid, src in db.execute("select id, source from scenes")
-            if sid not in wanted and (src in sources or src in gone_src)]
-    for sid in gone:
-        db.execute("delete from scenes where id = ?", (sid,))
-        db.execute("delete from scene_cues where scene_id = ?", (sid,))
-        if sid not in clip_ids:
-            db.execute("delete from glosses where clip_id = ?", (sid,))
-    if gone:
-        log(f"removed {len(gone)} scenes that no longer exist")
-
-    for sid, (source, _, idx, start, end, is_german, en, cues) in wanted.items():
-        db.execute("insert or replace into scenes values (?, ?, ?, ?, ?, ?, ?)",
-                   (sid, source, idx, start, end, is_german, json.dumps(en, ensure_ascii=False)))
-    todo = [w for sid, w in wanted.items() if sid not in have]
-    if todo:
-        german_texts = [c.text for w in todo if w[5] for c in w[7]]
-        log(f"parsing {len(german_texts)} lines of {len(todo)} scenes")
-        parsed = iter(parse(german_texts))
-        for source, sid, idx, start, end, is_german, en, cues in todo:
-            db.executemany("insert or replace into scene_cues values (?, ?, ?, ?, ?, ?)",
-                           [(sid, i, round(c.start, 3), round(c.end, 3), c.text,
-                             json.dumps(next(parsed) if is_german else [], ensure_ascii=False))
-                            for i, c in enumerate(cues)])
-    db.commit()
-    n = db.execute("select count(*), sum(german), count(distinct source) from scenes").fetchone()
-    shared = db.execute("select count(*) from scenes join clips using (id)").fetchone()[0]
-    log(f"done: {n[0]} scenes ({n[1]} German) in {n[2]} videos; {shared} are also feed clips")
-    if args.print:
-        print_scenes(db, args.only)
-
-
-def print_scenes(db, only: str | None) -> None:
-    for source, show, title, duration in db.execute(
-            "select source, show_title, title, duration from episodes where source like ? order by source",
-            (f"%{only or ''}%",)):
-        print(f"\n{show} {title}  ({source}, {duration / 60:.1f} min)")
-        for sid, idx, start, end, is_german in db.execute(
-                "select id, idx, start, end, german from scenes where source = ? order by idx", (source,)):
-            lines = [t for (t,) in db.execute("select text from scene_cues where scene_id = ? order by idx", (sid,))]
-            mark = " " if is_german else "x"
-            print(f"  {idx:3d} {mark} {int(start // 60):3d}:{start % 60:04.1f} {end - start:5.1f}s  " + " / ".join(lines)[:110])
-
+# ---------------------------------------------------------------- scenes
+# `feed.py scenes` split whole episodes into scenes for the TV app until 2026-11-17. kumapie has no scenes any more
+# (kumapie_plan.md "no more scenes"): an episode is a .kumapie.json made by tools\kumapie\pc_episodes.py, one line
+# per subtitle. The tables below it (episodes, scenes, scene_cues) are empty and stay only because `build` and the
+# unused gloss / defs exports name them.
 
 # ---------------------------------------------------------------- glosses
 
@@ -760,10 +651,6 @@ def main() -> None:
     p = sub.add_parser("build", help="find clips and index them")
     p.add_argument("--only", metavar="TEXT", help="only videos whose path contains TEXT (e.g. s1_01)")
     p.set_defaults(func=cmd_build)
-    p = sub.add_parser("scenes", help="split whole episodes into scenes for the TV app (no cutting)")
-    p.add_argument("--only", metavar="TEXT", help="only videos whose path contains TEXT (e.g. s1_01)")
-    p.add_argument("--print", action="store_true", help="print the scenes of those videos")
-    p.set_defaults(func=cmd_scenes)
     p = sub.add_parser("gloss", help="write word glosses with Claude (paid)")
     p.add_argument("--estimate", action="store_true", help="only count and estimate the cost")
     p.add_argument("--limit", type=int, help="gloss only this many random clips and print them")

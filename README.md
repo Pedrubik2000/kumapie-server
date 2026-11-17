@@ -7,12 +7,12 @@ tools that fill it. Runs on the Windows PC in `C:\dojo\kumapie-server`; media in
 | path | what |
 |---|---|
 | `services\feed\server.py` | dojo-feed, 127.0.0.1:8769 (Tailscale Serve HTTPS 8445): the German feed page and `/api/feed` |
-| `services\feed\tv.py` | `/api/tv/...`: shows, episodes and scenes the phones list and stream (`?person=`) |
+| `services\feed\tv.py` | `/api/tv/...`: shows and episodes (line by line) the phones and TVs list and stream (`?person=`) |
 | `services\feed\sync.py` | episodes made on a device, uploaded to `library\<key>\` |
 | `services\feed\known.py` | the words each person's kumapie shows as known |
 | `services\feed\dicts.py` | Yomitan dictionaries for the TV's lookups |
 | `services\feed\jobs.py` | episodes made on the PC for kumapie: AniWorld, YouTube, TikTok, Real-Debrid, uploaded files |
-| `tools\feed\feed.py` | German feed clips, scenes and glosses (`tools\feed\README.md`) |
+| `tools\feed\feed.py` | German feed clips and glosses (`tools\feed\README.md`) |
 | `tools\kumapie\pc_episodes.py` | library videos -> kumapie episodes |
 | `tools\kumapie\lyrics.py` | Japanese anime: the opening's and ending's lyrics into the `.srt` (Jimaku's song lines, else LRCLIB, placed by what Parakeet hears) |
 | `tools\kumapie\ja_words.py`, `jiten_split.ps1`, `jiten_lexicon.py` | Japanese words with the phones' own splitter |

@@ -57,13 +57,11 @@ Known-ness is never stored in `feed.db`: it changes daily, so the level is compu
 
 ## Scenes for the TV app (kumapie-tv)
 
-`feed.py scenes` splits every whole video into scenes for the TV app (plan: `kumapie_plan.md`). A scene
-is the same exchange as a clip (same `exchanges()`, same id), but every one is kept: short ones too, and
-lines that are not German speech (songs, English) with `german = 0`. Nothing is cut; the TV streams the
-whole episode and seeks. Tables in `feed.db`: `episodes` (show, episode, length), `scenes` (times are
-episode times, English cues as JSON), `scene_cues` (German lines with their tokens). A feed clip is a scene,
-so glosses written for one serve both; `export --scenes` writes the scenes' words still without a gloss.
-Run it after `build` when videos change; `--only s1_01 --print` shows how an episode was split.
+Gone since 2026-11-17 (plan: `kumapie_plan.md`, "no more scenes"): kumapie's only unit is the subtitle line, and
+an episode is a `<stem>.kumapie.json` next to its video, made by `tools\kumapie\pc_episodes.py` (one line per
+subtitle). `feed.py scenes` is removed; the tables `episodes`, `scenes` and `scene_cues` in `feed.db` are empty
+and stay defined only because `build` and the unused gloss / defs exports (`export --scenes`, `export-defs`,
+`export-words`) still name them. Their last contents: `C:\dojo\archive\kumapie-scenes-20261117\feed.db`.
 The service serves them to the TV under `/api/tv/...` (`services\feed\tv.py`, its docstring lists the
 routes) and keeps the TV's progress (resume point, scenes seen, minutes per day) in `state\feed\tv.db`.
 

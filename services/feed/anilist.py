@@ -42,7 +42,6 @@ def watched(tv) -> dict[int, dict]:
     """AniList id -> {"show", "episodes": watched to the end, "started"} for the configured libraries' anime."""
     tv.synced()
     with tv.tv_db() as db:
-        seen = tv.seen_scenes(db)
         spans = tv.seen_ranges(db)
     out: dict[int, dict] = {}
     for ep in tv.episodes.values():
@@ -52,10 +51,10 @@ def watched(tv) -> dict[int, dict]:
         if not m or m.get("source") != "anilist":
             continue
         s = out.setdefault(int(m["id"]), {"show": ep["show"], "episodes": set(), "started": False})
-        # Watched = kumapie's own rule (tv.counts: the spoken lines' time is covered, or every scene seen).
-        got = seen.get(ep["id"], ())
-        s["started"] = s["started"] or bool(got) or bool(spans.get(ep["id"]))
-        if tv.counts(ep, got, spans.get(ep["id"], ()))["watched"]:
+        # Watched = kumapie's own rule (tv.counts: the spoken lines' time is covered).
+        got = spans.get(ep["id"], ())
+        s["started"] = s["started"] or bool(got)
+        if tv.counts(ep, got)["watched"]:
             s["episodes"].add(ep["episode"] or ep["id"])  # by number: the same episode in two folders counts once
     return {k: v for k, v in out.items() if v["started"]}
 
@@ -121,9 +120,8 @@ def demo():
         def tv_db(self):
             import contextlib
             return contextlib.nullcontext()
-        def seen_scenes(self, db): return {"a": {1, 2}, "b": {1}, "c": {1}}
-        def seen_ranges(self, db): return {}
-        def counts(self, ep, seen, spans): return {"watched": len(seen) >= len(ep["scenes"])}
+        def seen_ranges(self, db): return {"a": [1, 2], "b": [1], "c": [1]}
+        def counts(self, ep, spans): return {"watched": len(spans) >= len(ep["scenes"])}
         def show_meta(self, show): return {"source": "anilist", "id": "7"}
     CONF["libraries"] = ["p"]
     assert {k: (sorted(v["episodes"]), v["started"]) for k, v in watched(TV()).items()} == {7: ([1], True)}
