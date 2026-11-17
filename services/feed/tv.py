@@ -103,6 +103,20 @@ ROUTES = {
 }
 KINDS = ["anime", "shows", "movies", "youtube", "visual_novels", "reels"]  # order of the rows on Home (reels: feed only)
 
+def said(ep: dict) -> set[str]:
+    """An episode's scenes without the lyrics of its opening and ending (every line "♪ ...", kumapie's Scene.song)."""
+    return {sc["id"] for sc in ep["scenes"]
+            if not (sc["cues"] and all(c["seg"] and c["seg"][0][0].startswith("♪") for c in sc["cues"]))}
+
+
+def need(ep: dict) -> list:
+    """The time of an episode's spoken lines (ranges.spoken), worked out once: what "watched" has to cover."""
+    if "need" not in ep:
+        ids = said(ep)
+        ep["need"] = ranges.spoken((c["start"], c["end"]) for sc in ep["scenes"] if sc["id"] in ids for c in sc["cues"])
+    return ep["need"]
+
+
 TV_SCHEMA = """
 create table if not exists progress (episode text primary key, pos real, updated text);
 create table if not exists seen (scene text primary key, episode text, first text, last text, times integer);
@@ -510,12 +524,10 @@ class TV:
     def counts(ep: dict, seen, spans=()) -> dict:
         """An episode's scenes and how many were seen, without the lyrics of its opening and ending (every line "♪ ...",
         kumapie's Scene.song): skipping the songs must not keep an episode unwatched."""
-        said = {sc["id"] for sc in ep["scenes"]
-                if not (sc["cues"] and all(c["seg"] and c["seg"][0][0].startswith("♪") for c in sc["cues"]))}
-        need = ranges.spoken((c["start"], c["end"]) for sc in ep["scenes"] if sc["id"] in said for c in sc["cues"])
+        said_ = said(ep)
         # "watched": by time ranges, or (a build that still sends scene ids) every scene seen.
-        return {"scenes": len(said), "seen": len(said & set(seen)),
-                "watched": ranges.watched(need, spans) or (bool(said) and said <= set(seen))}
+        return {"scenes": len(said_), "seen": len(said_ & set(seen)),
+                "watched": ranges.watched(need(ep), spans) or (bool(said_) and said_ <= set(seen))}
 
     def shows(self, status_of, person: str | None = None) -> dict:
         """[status_of]: a library person's known words (None: their phone never sent any)."""
@@ -944,14 +956,16 @@ class TV:
             unwatched = dict(db.execute(f"select episode, at from unwatched where person in ({q0})", tuple(people)))
             spans = {e: [since, json.loads(sp)] for e, since, sp in db.execute(
                 f"select episode, since, spans from ranges where person in ({q0})", tuple(people))}
+            # Episodes those ranges finish: a phone lists them as watched without having their lines.
+            done = {e: since for e, (since, sp) in spans.items() if e in self.episodes and ranges.watched(need(self.episodes[e]), sp)}
             lwatch: dict[str, dict[str, float]] = {}
             for p, day, s in db.execute(f"select person, day, seconds from watch_p where person in ({q})", tuple(people)):
                 days = lwatch.setdefault(LANG.get(p, PERSON.transcript), {})
                 days[day] = days.get(day, 0) + s
         if F["person"] not in people:
             return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "marked": {}, "gloss": {},
-                    "unwatched": unwatched, "ranges": spans}
-        return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "unwatched": unwatched, "ranges": spans,
+                    "unwatched": unwatched, "ranges": spans, "done": done}
+        return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "unwatched": unwatched, "ranges": spans, "done": done,
                 "marked": {w: [True, 0] for w in self.known_words()},
                 "gloss": {w: g for w in lookups if (g := self.dict_gloss(w))}}
 
