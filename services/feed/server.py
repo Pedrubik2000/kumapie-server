@@ -423,7 +423,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.sync_get(path.split("/")[3:])
         if path == "/api/aniworld":
             return self.send_json(jobs.listing())
-        if path in ("/api/discover/catalog", "/api/discover/saved", "/api/discover/board", "/api/discover/going") or (m := DISCOVER.match(path)):  # kumapie's Discover page (discover.py)
+        # m first: with it after the `or`, a listed path skipped it and one without its own branch below hit `m[1]`
+        # unset (UnboundLocalError on /api/discover/going, 2026-11-16 16:06-16:07).
+        if (m := DISCOVER.match(path)) or path in ("/api/discover/catalog", "/api/discover/saved", "/api/discover/board", "/api/discover/going"):  # kumapie's Discover page (discover.py)
             try:
                 qs = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
                 if path == "/api/discover/catalog":
@@ -434,6 +436,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(discover.board(qs.get("person", "")))
                 if path == "/api/discover/going":
                     return self.send_json(discover.going(tv, qs.get("person", ""), qs.get("lang", "ja")))
+                if m is None:  # a listed path without its branch above
+                    return self.send_error(404)
                 if m[1] == "meta":
                     return self.send_json(discover.meta(m[2], m[3], qs.get("person", ""), qs.get("lang", "ja")))
                 if m[1] == "subs":
