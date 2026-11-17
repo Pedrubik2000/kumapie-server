@@ -62,8 +62,8 @@ an episode is a `<stem>.kumapie.json` next to its video, made by `tools\kumapie\
 subtitle). `feed.py scenes` is removed; the tables `episodes`, `scenes` and `scene_cues` in `feed.db` are empty
 and stay defined only because `build` and the unused gloss / defs exports (`export --scenes`, `export-defs`,
 `export-words`) still name them. Their last contents: `C:\dojo\archive\kumapie-scenes-20261117\feed.db`.
-The service serves them to the TV under `/api/tv/...` (`services\feed\tv.py`, its docstring lists the
-routes) and keeps the TV's progress (resume point, scenes seen, minutes per day) in `state\feed\tv.db`.
+The service serves the episodes under `/api/tv/...` (`services\feed\tv.py`, its docstring lists the
+routes) and keeps the TV's progress (resume point, watched time ranges, minutes per day) in `state\feed\tv.db`.
 
 **Meanings for the TV: one per word** (decided 2026-10-04, instead of one per word per scene). The
 `word_glosses` table holds a word's own meaning; a scene's meaning (in `glosses`, by scene id) is used
