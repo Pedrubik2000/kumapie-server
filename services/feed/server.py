@@ -12,6 +12,7 @@ phone sends (known.py: state\\feed\\known\\<person>.json), plus the words marked
   POST /api/tv/known_words  {"person", "lang", "device", "words"}: the words a device shows as known (known.py)
   POST /api/tv/known_lists  {"person", "lang", "imported"}: a device's Jiten import -> the newest of all its devices' (known.py)
   POST /api/tv/personal  {"person", "entries"}: a device's personal dictionary -> the merged one (personal.py)
+  POST /api/tv/srs/sync  {"person", "lang", "since", "cards", "revlog", "exposures"}: kumapie's own cards, append-only (srs_sync.py)
   GET  /api/tv/known_words?person=&lang=   those words (kumadeck on the Steam Deck)
   POST /api/tv/device_seen  {"person", "seen", "unwatched"}: what the person's phones count as seen (tv.py)
   POST /api/tv/device_watch {"person", "watch": {lang: {day: seconds}}}: the phones' own time per language (tv.py)
@@ -57,6 +58,7 @@ import sync  # noqa: E402
 import known  # noqa: E402
 import srs  # noqa: E402
 import personal  # noqa: E402
+import srs_sync  # noqa: E402
 import jobs  # noqa: E402
 import stremio  # noqa: E402
 import discover  # noqa: E402
@@ -701,7 +703,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"error": str(e)[:200]})
         if path not in ("/api/feed", "/api/tv/progress", "/api/tv/lookup", "/api/tv/known", "/api/tv/known_words", "/api/tv/known_lists",
                         "/api/tv/device_seen", "/api/tv/device_watch", "/api/tv/meta", "/api/tv/stream", "/api/tv/mark", "/api/tv/personal",
-                        "/api/tv/srs/add", "/api/tv/srs/rate", "/api/tv/srs/undo"):
+                        "/api/tv/srs/add", "/api/tv/srs/rate", "/api/tv/srs/undo", "/api/tv/srs/sync"):
             return self.send_error(404)
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
@@ -721,6 +723,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(tv.mark(body))
             if path == "/api/tv/meta":
                 return self.send_json(tv.set_meta(body))
+            if path == "/api/tv/srs/sync":  # kumapie's own cards (Pedro); /srs/add|rate|undo are srs.py's (Jackson)
+                return self.send_json(srs_sync.handle(body))
             if path.startswith("/api/tv/srs/"):
                 key = tv.srs_key(body)
                 if path == "/api/tv/srs/add":
