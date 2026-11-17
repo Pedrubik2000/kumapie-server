@@ -23,7 +23,7 @@ state\\feed\\tv.db (resume point per episode, scenes seen, seconds watched per d
                                      under it while it waits; "novel": true episodes pause after every scene (line)
   GET  /api/tv/thumb/<id>.jpg        a frame of the episode (made once, cached in state\\feed\\tv\\)
   GET  /api/tv/poster/<show>.jpg     the show's cover (cover.jpg/poster.jpg); 404 without one (the apps draw a neutral poster)
-  POST /api/tv/progress              {"episode", "pos", "seen": [scene ids], "watched": seconds}
+  POST /api/tv/progress              {"episode", "pos", "seen": [scene ids], "ranges": [[start_ms, end_ms]], "watched": seconds}
   POST /api/tv/lookup                {"word": inflection, "scene": id}: a word looked up in the picker
   POST /api/tv/srs/add     {"scene", "line": cue index, "word", "meaning"}: mine a word into the person's PC cards (srs.py,
                                      config [srs] people) -> {"c": "b"}; /srs/rate {"scene" | "person"+"lang", "word",
@@ -65,6 +65,7 @@ from dojo import cfg
 import characters
 import dicts
 import known
+import ranges
 import srs
 import sync
 import sys
@@ -109,6 +110,7 @@ create table if not exists watch (day text primary key, seconds real);
 create table if not exists lookups (word text, scene text, at text);
 create table if not exists watch_p (day text, person text, seconds real, primary key (day, person));
 create table if not exists unwatched (episode text primary key, at integer);
+create table if not exists ranges (person text, episode text, since integer, spans text, primary key (person, episode));
 """
 
 
@@ -342,6 +344,18 @@ class TV:
                 db.executemany("insert into unwatched values (?, ?, ?)", [(owner(e), e, t) for e, t in unw])
                 db.execute("pragma user_version = 1")
                 log(f"tv.db: progress per person ({len(pos)} positions, {len(seen)} scenes, {len(unw)} not watched)")
+            if db.execute("pragma user_version").fetchone()[0] < 2:
+                # Once: the scenes seen on the TV become watched time ranges, before the scenes go ("no more scenes").
+                at = {sc["id"]: sc for ep in self.episodes.values() for sc in ep["scenes"]}
+                unw = {(p, e): t for p, e, t in db.execute("select person, episode, at from unwatched")}
+                spans: dict[tuple, list] = {}
+                for p, scene, eid, last in db.execute("select person, scene, episode, last from seen"):
+                    if scene in at and datetime.datetime.fromisoformat(last).timestamp() > unw.get((p, eid), 0):
+                        spans.setdefault((p, eid), []).append([at[scene]["start"] * 1000, at[scene]["end"] * 1000])
+                db.executemany("insert or ignore into ranges values (?, ?, ?, ?)",
+                               [(p, e, int(time.time()), json.dumps(ranges.union(sp))) for (p, e), sp in spans.items()])
+                db.execute("pragma user_version = 2")
+                log(f"tv.db: seen scenes as time ranges ({len(spans)} episodes)")
         self._per_person = True
 
     def key_for(self, eid: str, viewer: str | None) -> str:
@@ -389,7 +403,8 @@ class TV:
 
     @staticmethod
     def device_seen(body: dict) -> dict:
-        """A person's phones' merged view: {"person": sync person, "seen": {scene: episode}, "unwatched": {episode: epoch}}."""
+        """A person's phones' merged view: {"person": sync person, "seen": {scene: episode}, "unwatched": {episode: epoch},
+        "ranges": {episode: [[start_ms, end_ms], ...]}} (ranges: builds without scenes)."""
         person = str(body.get("person", ""))
         if person not in sync.PEOPLE:
             raise ValueError("unknown person")
@@ -399,7 +414,8 @@ class TV:
             data = json.loads(DEVICE_SEEN.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
-        data[person] = {"seen": seen, "unwatched": unwatched, "at": int(time.time())}
+        spans = {str(e): ranges.union(r) for e, r in (body.get("ranges") or {}).items()}
+        data[person] = {"seen": seen, "unwatched": unwatched, "ranges": spans, "at": int(time.time())}
         tmp = DEVICE_SEEN.with_suffix(".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
         tmp.replace(DEVICE_SEEN)
@@ -448,6 +464,25 @@ class TV:
                     out.setdefault(k, set()).add(scene)
         return {eid: s for (k, eid), s in out.items() if k == self.key_for(eid, viewer)}
 
+    def seen_ranges(self, db, viewer: str | None = None) -> dict[str, list]:
+        """Episode -> the time ranges the viewer watched anywhere ([seen_scenes] for builds without scenes): the TV's
+        since the last "Mark as not watched", plus their phones' (already without what was marked there)."""
+        try:
+            data = json.loads(DEVICE_SEEN.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        unwatched = {(p, e): t for p, e, t in db.execute("select person, episode, at from unwatched")}
+        out: dict[tuple, list] = {}
+        for p, eid, since, spans in db.execute("select person, episode, since, spans from ranges"):
+            if since > unwatched.get((p, eid), 0):
+                out[(p, eid)] = json.loads(spans)
+        for sp, d in data.items():
+            for eid, spans in d.get("ranges", {}).items():
+                k = (self.key_for(eid, sp), eid)
+                if unwatched.get(k, 0) <= d.get("at", 0):
+                    out[k] = out.get(k, []) + spans
+        return {eid: ranges.union(s) for (k, eid), s in out.items() if k == self.key_for(eid, viewer)}
+
     def mark(self, body: dict) -> dict:
         """POST /api/tv/mark {"episodes": [ids], "watched": bool}: watched = every scene seen now (no watch time);
         not watched = a time before which their scenes don't count, on every device (the phones read it from
@@ -460,21 +495,27 @@ class TV:
             for ep in eps:
                 key = self.key_for(ep["id"], viewer)
                 if body.get("watched"):
+                    db.execute("insert or replace into ranges values (?, ?, ?, ?)", (key, ep["id"], int(time.time()) + 1,
+                               json.dumps([[0, int((ep["duration"] or max((sc["end"] for sc in ep["scenes"]), default=0)) * 1000)]])))
                     for sc in ep["scenes"]:
                         db.execute("insert into seen values (?, ?, ?, ?, ?, 1) on conflict (person, scene) do update"
                                    " set last = excluded.last, times = times + 1", (key, sc["id"], ep["id"], now, now))
                 else:
                     db.execute("insert or replace into unwatched values (?, ?, ?)", (key, ep["id"], int(time.time())))
+                    db.execute("delete from ranges where person = ? and episode = ?", (key, ep["id"]))
                     db.execute("insert or replace into progress values (?, ?, 0, ?)", (key, ep["id"], now))
         return {"ok": True, "episodes": len(eps)}
 
     @staticmethod
-    def counts(ep: dict, seen) -> dict:
+    def counts(ep: dict, seen, spans=()) -> dict:
         """An episode's scenes and how many were seen, without the lyrics of its opening and ending (every line "♪ ...",
         kumapie's Scene.song): skipping the songs must not keep an episode unwatched."""
         said = {sc["id"] for sc in ep["scenes"]
                 if not (sc["cues"] and all(c["seg"] and c["seg"][0][0].startswith("♪") for c in sc["cues"]))}
-        return {"scenes": len(said), "seen": len(said & set(seen))}
+        need = ranges.spoken((c["start"], c["end"]) for sc in ep["scenes"] if sc["id"] in said for c in sc["cues"])
+        # "watched": by time ranges, or (a build that still sends scene ids) every scene seen.
+        return {"scenes": len(said), "seen": len(said & set(seen)),
+                "watched": ranges.watched(need, spans) or (bool(said) and said <= set(seen))}
 
     def shows(self, status_of, person: str | None = None) -> dict:
         """[status_of]: a library person's known words (None: their phone never sent any)."""
@@ -483,6 +524,7 @@ class TV:
         with self.tv_db() as db:
             rows = db.execute("select person, episode, pos, updated from progress").fetchall()
             seen = self.seen_scenes(db, person)
+            spans = self.seen_ranges(db, person)
         mine = {e: (pos, u) for p, e, pos, u in rows if p == self.key_for(e, person)}
         resume = {e: pos for e, (pos, _) in mine.items()}
         resumed = {e: int(datetime.datetime.fromisoformat(u).timestamp()) for e, (_, u) in mine.items() if u}  # Continue watching: newest first
@@ -499,7 +541,7 @@ class TV:
             sh["episodes"].append({
                 "id": ep["id"], "title": ep["title"], "season": ep["season"], "episode": ep["episode"],
                 "duration": ep["duration"], "thumb": f"/api/tv/thumb/{ep['id']}.jpg",
-                **self.counts(ep, seen.get(ep["id"], ())), "resume": resume.get(ep["id"]), "resumed_at": resumed.get(ep["id"], 0),
+                **self.counts(ep, seen.get(ep["id"], ()), spans.get(ep["id"], ())), "resume": resume.get(ep["id"]), "resumed_at": resumed.get(ep["id"], 0),
                 "easy": sum(1 for lv in levels if lv <= 1)})  # scenes at i+0 / i+1 today
         self.fill_meta()
         lang = self.speaks(people)
@@ -635,6 +677,7 @@ class TV:
         with self.tv_db() as db:
             row = db.execute("select pos from progress where person = ? and episode = ?", (key, eid)).fetchone()
             seen = self.seen_scenes(db, viewer).get(eid, set())
+            spans = self.seen_ranges(db, viewer).get(eid, [])
             looked = dict(db.execute("select word, count(*) from lookups where person = ? group by word", (key,)))
         status = status_of(key)
         fits = self.scene_senses(ep)
@@ -653,7 +696,7 @@ class TV:
             # The show's Japanese title (AniList): kumapie puts faces only on this work's characters.
             "work": ((self.show_meta(ep["show"]) or {}).get("title") or {}).get("ja", "")
                     or (self.stream_work(ep["show_title"]) if ep["kind"] == "stream" else ""),
-            "video": f"/api/tv/video/{eid}", "resume": row[0] if row else None,
+            "video": f"/api/tv/video/{eid}", "resume": row[0] if row else None, "ranges": spans,
             "scenes": [{"id": sc["id"], "i": sc["i"], "start": sc["start"], "end": sc["end"],
                         "german": sc["german"], "level": self.level(sc, status) if sc["german"] and not theirs else None,
                         "seen": sc["id"] in seen,
@@ -805,6 +848,12 @@ class TV:
             for s in seen:
                 db.execute("insert into seen values (?, ?, ?, ?, ?, 1) on conflict (person, scene) do update"
                            " set last = excluded.last, times = times + 1", (key, s, eid, now, now))
+            if body.get("ranges"):  # [[start_ms, end_ms], ...] played since the last report (builds without scenes)
+                row = db.execute("select since, spans from ranges where person = ? and episode = ?", (key, eid)).fetchone()
+                unw = (db.execute("select at from unwatched where person = ? and episode = ?", (key, eid)).fetchone() or (0,))[0]
+                old = json.loads(row[1]) if row and row[0] > unw else []
+                db.execute("insert or replace into ranges values (?, ?, ?, ?)",
+                           (key, eid, row[0] if old else max(int(time.time()), unw + 1), json.dumps(ranges.union(old + body["ranges"]))))
             if watched:
                 db.execute("insert into watch_p values (?, ?, ?) on conflict (day, person) do update"
                            " set seconds = seconds + excluded.seconds", (study_day(), key, watched))
@@ -893,14 +942,16 @@ class TV:
             watch = dict(db.execute(f"select day, sum(seconds) from watch_p where person in ({q}) group by day", tuple(people)))
             lookups = dict(db.execute(f"select word, count(*) from lookups where person in ({q}) group by word", tuple(people)))
             unwatched = dict(db.execute(f"select episode, at from unwatched where person in ({q0})", tuple(people)))
+            spans = {e: [since, json.loads(sp)] for e, since, sp in db.execute(
+                f"select episode, since, spans from ranges where person in ({q0})", tuple(people))}
             lwatch: dict[str, dict[str, float]] = {}
             for p, day, s in db.execute(f"select person, day, seconds from watch_p where person in ({q})", tuple(people)):
                 days = lwatch.setdefault(LANG.get(p, PERSON.transcript), {})
                 days[day] = days.get(day, 0) + s
         if F["person"] not in people:
             return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "marked": {}, "gloss": {},
-                    "unwatched": unwatched}
-        return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "unwatched": unwatched,
+                    "unwatched": unwatched, "ranges": spans}
+        return {"pos": pos, "seen": seen, "watch": watch, "lwatch": lwatch, "lookups": lookups, "unwatched": unwatched, "ranges": spans,
                 "marked": {w: [True, 0] for w in self.known_words()},
                 "gloss": {w: g for w in lookups if (g := self.dict_gloss(w))}}
 
