@@ -563,7 +563,9 @@ class TV:
         """An episode's scenes and how many were seen, without the lyrics of its opening and ending (every line "♪ ...",
         kumapie's Scene.song): skipping the songs must not keep an episode unwatched."""
         said_ = said(ep)
-        seen = {sc for sc in said_ if sc in seen or parent(sc) in seen}
+        seen = {sc["id"] for sc in ep["scenes"] if sc["id"] in said_ and (
+            sc["id"] in seen or parent(sc["id"]) in seen
+            or any(a <= (sc["start"] + sc["end"]) * 500 <= b for a, b in spans))}
         # "watched": by time ranges, or (a build that still sends scene ids) every scene seen.
         watched = ranges.watched(need(ep), spans) or (bool(said_) and said_ <= set(seen))
         # Watched by ranges: every scene counts as seen, so a device on a build that still counts scenes shows it too.
@@ -1022,6 +1024,7 @@ class TV:
         with self.tv_db() as db:
             days = dict(db.execute(f"select day, round(sum(seconds)) from watch_p where person in ({q}) group by day order by day", tuple(people)))
             seen = dict(db.execute(f"select episode, count(*) from seen where person in ({q}) group by episode", tuple(people)))
+            by_scene, spans = self.seen_scenes(db, person), self.seen_ranges(db, person)
             lookups = db.execute(f"select count(*), count(distinct word) from lookups where person in ({q})", tuple(people)).fetchone()
             top = db.execute(f"select word, count(*) n from lookups where person in ({q}) group by word order by n desc, word limit 10",
                              tuple(people)).fetchall()
@@ -1037,15 +1040,18 @@ class TV:
         mine = [ep for ep in self.episodes.values() if ep["person"] in people or ep["id"] in seen]  # theirs and shared ones watched
         for ep in mine:
             gloss.update(ep["gloss"])
+        mine = [ep for ep in mine if ep["id"] in spans or ep["id"] in by_scene or ep["person"] in people]
+        # Lines heard of the lines that are said (counts(): by watched time, or the scenes seen before there were ranges).
+        heard = {ep["id"]: self.counts(ep, by_scene.get(ep["id"], ()), spans.get(ep["id"], ())) for ep in mine}
         shows: dict[str, dict] = {}
         for ep in mine:
             sh = shows.setdefault(ep["show"], {"title": ep["show_title"], "seen": 0, "scenes": 0})
-            sh["seen"] += seen.get(ep["id"], 0)
-            sh["scenes"] += len(ep["scenes"])
+            sh["seen"] += heard[ep["id"]]["seen"]
+            sh["scenes"] += heard[ep["id"]]["scenes"]
         return {
             "days": days, "today": days.get(today.isoformat(), 0), "week": week, "total": sum(days.values()),
             "streak": streak,
-            "scenes_seen": sum(seen.get(e["id"], 0) for e in mine), "scenes_total": sum(len(e["scenes"]) for e in mine),
+            "scenes_seen": sum(h["seen"] for h in heard.values()), "scenes_total": sum(h["scenes"] for h in heard.values()),
             "lookups": lookups[0], "words_looked_up": lookups[1],
             "top_lookups": [[w, n, gloss.get(w, "")] for w, n in top],
             "marked_known": len(self.known_words()) if F["person"] in people else 0,
