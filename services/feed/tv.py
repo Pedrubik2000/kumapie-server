@@ -538,7 +538,9 @@ class TV:
             if not m:
                 continue
             if sh["kind"] in ("anime", "shows", "movies"):  # a channel or a novel keeps its own name (Nicos Weg, a chapter)
-                sh["title"] = (m.get("title") or {}).get(lang) or (m.get("title") or {}).get("en") or sh["title"]
+                t = m.get("title") or {}
+                # A Japanese show by its Japanese title where the metadata has one (user, 2026-11-17: 薬屋のひとりごと).
+                sh["title"] = (sh["lang"] == "ja" and t.get("ja")) or t.get(lang) or t.get("en") or sh["title"]
             sh["description"] = (m.get("description") or {}).get(lang) or (m.get("description") or {}).get("en") or ""
             sh["year"] = m.get("year")
             for e in sh["episodes"]:  # the apps show it only once the episode is watched (spoilers)

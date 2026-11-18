@@ -160,7 +160,8 @@ def going(tv, person: str, lang: str = "ja") -> list[dict]:
                 f"{KITSU if base.startswith('kitsu:') else stremio.META['tt']}/meta/{type_}/{base}.json").get("meta") or {})}))
         except (OSError, ValueError):
             continue
-        out.append({"title": {k: t[k] for k in ("id", "type", "name", "poster", "year")}, "id": sid,
+        # Its Japanese title for Home (AniList, as for its characters' faces): display only, "name" stays what Stremio calls it.
+        out.append({"title": {**{k: t[k] for k in ("id", "type", "name", "poster", "year")}, "name_ja": tv.stream_work(t["name"])}, "id": sid,
                     "number": stremio.numbers(sid)[1], "duration": dur, "resume": p, "resumed_at": at,
                     "ready": f"ep|{person}|{lang}|{sid}" in done})
     return sorted(out, key=lambda g: -g["resumed_at"])
