@@ -84,7 +84,8 @@ def add_media(work: str, media: list[str]) -> None:
     media = franchise(media)
     with _lock:
         d = load()
-        if not media or d["works"].get(work) == media:
+        # A subset of what's kept: AniList cut franchise() short (429 after a restart); never shrink the work for it.
+        if not media or set(media) <= set(d["works"].get(work) or []):
             return
         d["works"][work] = media
         _save(d)
@@ -104,7 +105,7 @@ def franchise(media: list[str], cap: int = 15) -> list[str]:
                                      {"Content-Type": "application/json", "User-Agent": "dojo-feed"})
         try:
             edges = json.load(urllib.request.urlopen(req, timeout=20))["data"]["Media"]["relations"]["edges"]
-        except OSError as e:
+        except (OSError, ValueError, KeyError, TypeError) as e:  # TypeError: "Media": null in an error answer
             print(f"characters: relations: {e}", flush=True)
             break
         for e in edges:

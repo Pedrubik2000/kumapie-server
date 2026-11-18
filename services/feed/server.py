@@ -383,6 +383,12 @@ def lan_url() -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def send_error(self, code, message=None, explain=None):
+        # The status line is latin-1 (http.server encodes it strictly): a reason with a Japanese path or title
+        # (ffmpeg's command in /api/tv/cut) raised UnicodeEncodeError and the device got no answer. The body keeps it whole.
+        safe = message.encode("latin-1", "replace").decode("latin-1") if message else message
+        super().send_error(code, safe, explain or (message if safe != message else None))
+
     def parse_request(self):
         # Everything comes through Tailscale Serve (from 127.0.0.1). Straight from the home network: an episode's video only.
         ok = super().parse_request()

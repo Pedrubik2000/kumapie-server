@@ -97,6 +97,8 @@ def handle(body: dict, folder: Path = DIR, people=None) -> dict:
                      f"AND {lang_of} ORDER BY id")
                 out[t] = [dict(zip(cols, r)) for r in db.execute(q, (t, since, lang)) if r[0] not in mine[t]]
             return out
+        except sqlite3.IntegrityError as e:  # a card without a column the table needs: 400, not 500
+            raise ValueError(f"a row the PC's table refuses: {e}") from e
         finally:
             db.close()
 
@@ -105,7 +107,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as d:
         db = sqlite3.connect(Path(d) / "p.sqlite")  # the tables as Srs.kt makes them (only the columns used here)
         db.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        db.execute(f"CREATE TABLE cards ({', '.join(CARD)}, stability, difficulty, last_review, due)")
+        db.execute(f"CREATE TABLE cards ({', '.join(c + (' NOT NULL' if c == 'word' else '') for c in CARD)}, stability, difficulty, last_review, due)")
         db.execute(f"CREATE TABLE revlog ({', '.join(REVLOG)})")
         db.execute(f"CREATE TABLE exposures ({', '.join(EXPOSURE)})")
         db.execute("INSERT INTO meta VALUES ('params', '[]')")
@@ -130,7 +132,7 @@ if __name__ == "__main__":
         assert next(c["word"] for c in go()["cards"] if c["id"] == 2) == "Bäume"
         all_ids = [r["id"] for r in go()["revlog"]]
         assert all_ids == [50, 100], all_ids  # each row once
-        for bad in ({"person": "q"}, {"cards": [card(3, "ja")]}, {"revlog": [{"id": "1"}]}, {"since": True}):
+        for bad in ({"person": "q"}, {"cards": [card(3, "ja")]}, {"revlog": [{"id": "1"}]}, {"since": True}, {"cards": [card(4, word=None)]}):
             try:
                 go(**bad)
                 raise AssertionError(f"accepted {bad}")

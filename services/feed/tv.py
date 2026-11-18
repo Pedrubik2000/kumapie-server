@@ -576,7 +576,9 @@ class TV:
                 k and (n in k or k in n) for k in map(key, [m["title"]["romaji"], m["title"]["english"], *(m["synonyms"] or [])]))]
             cls._works[name] = (fits[0]["title"]["native"] or "") if fits else ""
             # Its characters (every season that fits) into the characters' dictionary: their faces and names.
-            characters.add_media(name, [f"ANIME:{m['id']}" for m in fits])
+            # In the background: franchise() asks AniList up to 15 times, which held Home (/api/discover/going) and an
+            # episode's open; its errors aren't this request's.
+            threading.Thread(target=characters.add_media, args=(name, [f"ANIME:{m['id']}" for m in fits]), daemon=True).start()
         return cls._works[name]
 
     @staticmethod

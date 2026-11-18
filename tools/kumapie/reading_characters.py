@@ -146,6 +146,8 @@ def main(force: bool) -> None:
     tmp.unlink()
     part.replace(out)
     for old in have:
+        if old == out:  # built twice in the same minute: that name is the new zip now
+            continue
         try:
             old.unlink()
         except PermissionError:  # an app still reading it (2026-11-16): next build removes it
