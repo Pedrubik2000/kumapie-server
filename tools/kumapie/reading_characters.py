@@ -109,7 +109,7 @@ def main(force: bool) -> None:
                 time.sleep(1)
         entries = json.dumps([{"source": "anilist", "id": i.split(":")[1], "media_type": i.split(":")[0]} for i in ids])
         tmp = OUT / "bee_reading.part"
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/yomitan-dict?entries={urllib.parse.quote(entries)}",
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/yomitan-dict?spoilers=false&entries={urllib.parse.quote(entries)}",
                                     timeout=3600) as r, open(tmp, "wb") as f:
             f.write(r.read())
     finally:
