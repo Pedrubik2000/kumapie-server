@@ -28,7 +28,7 @@ def tailscale_url(port: int) -> str:
     if port not in _url:
         _url[port] = ""
         try:
-            exe = shutil.which("tailscale") or r"C:\Program Files\Tailscale	ailscale.exe"
+            exe = shutil.which("tailscale") or r"C:\Program Files\Tailscale\tailscale.exe"
             out = subprocess.run([exe, "serve", "status", "--json"], capture_output=True, timeout=10, check=True,
                                  creationflags=subprocess.CREATE_NO_WINDOW).stdout
             for hostport, web in json.loads(out).get("Web", {}).items():
