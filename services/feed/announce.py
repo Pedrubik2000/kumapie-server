@@ -1,7 +1,10 @@
 """Announce dojo-feed on the LAN as _kumapiepc._tcp (DNS-SD) so the kumapie app finds the PC with NsdManager.
 Runs in a daemon thread (HTTP never waits for it): retries until it works, re-announces when the LAN IP changes.
 Never raises: no network or a busy port 5353 only logs a warning.  Check: `python announce.py`."""
+import json
+import shutil
 import socket
+import subprocess
 import threading
 
 TYPE = "_kumapiepc._tcp.local."
@@ -16,14 +19,37 @@ def lan_ip() -> str:
         return s.getsockname()[0]
 
 
-def _register(ip: str, port: int, instance: str):
+_url: dict = {}
+
+
+def tailscale_url(port: int) -> str:
+    """The https address Tailscale Serve publishes for 127.0.0.1:<port> ("" if none): what a phone should keep
+    using away from home. Read once from `tailscale serve status --json` (cached)."""
+    if port not in _url:
+        _url[port] = ""
+        try:
+            exe = shutil.which("tailscale") or r"C:\Program Files\Tailscale	ailscale.exe"
+            out = subprocess.run([exe, "serve", "status", "--json"], capture_output=True, timeout=10, check=True,
+                                 creationflags=subprocess.CREATE_NO_WINDOW).stdout
+            for hostport, web in json.loads(out).get("Web", {}).items():
+                if any(f":{port}" in h.get("Proxy", "") for h in web.get("Handlers", {}).values()):
+                    _url[port] = "https://" + hostport.removesuffix(":443")
+        except Exception:
+            pass
+    return _url[port]
+
+
+def _register(ip: str, port: int, instance: str, url: str = ""):
     """-> (Zeroconf, ServiceInfo). The SRV target is `<instance>-kumapie.local.`, a name only zeroconf answers for:
     Windows' own mDNS answers for <hostname>.local with Tailscale/WSL/IPv6 addresses and Android takes one."""
     from zeroconf import ServiceInfo, Zeroconf
     zc = Zeroconf(interfaces=[ip])
     try:
+        props = {"v": "1"}
+        if url:
+            props["url"] = url
         info = ServiceInfo(TYPE, f"{instance}.{TYPE}", port=port, addresses=[socket.inet_aton(ip)],
-                           properties={"v": "1"}, server=f"{instance}-kumapie.local.")
+                           properties=props, server=f"{instance}-kumapie.local.")
         zc.register_service(info)
     except Exception:
         zc.close()
@@ -59,7 +85,7 @@ def announce(port: int, log=print):
                     _unregister(cur[0], cur[1], log)
                     cur = None
                 if not cur:
-                    cur = (*_register(ip, port, name), ip)
+                    cur = (*_register(ip, port, name, tailscale_url(port)), ip)
                     log(f"mDNS: {name}.{TYPE} on {ip}:{port}")
             except Exception as e:
                 log(f"mDNS announce failed, retrying (dojo-feed keeps running): {e!r}")
@@ -96,7 +122,7 @@ if __name__ == "__main__":
         update_service = remove_service = lambda *a: None
 
     ip = lan_ip()
-    zc1, info = _register(ip, 18769, inst)
+    zc1, info = _register(ip, 18769, inst, tailscale_url(8769))
     zc2 = Zeroconf(interfaces=[ip])
     ServiceBrowser(zc2, TYPE, L())
     ok = seen.wait(10)
