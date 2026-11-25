@@ -13,6 +13,7 @@ dependencies = [
     "sudachidict_core==20260723.1",  # tools/kumapie/jiten_split.ps1: the dictionary version kumapie downloads
     "requests",           # kumapie's meta.py (show metadata)
     "fsrs",               # services/feed/srs.py: the TV word SRS (py-fsrs, default settings)
+    "zeroconf>=0.154.0",
 ]
 
 [tool.uv]

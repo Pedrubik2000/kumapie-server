@@ -56,6 +56,7 @@ from dojo.selfrestart import restart_on_change  # noqa: E402
 from tv import TV  # noqa: E402
 import dicts  # noqa: E402
 import sync  # noqa: E402
+import announce  # noqa: E402
 import known  # noqa: E402
 import srs  # noqa: E402
 import personal  # noqa: E402
@@ -830,4 +831,9 @@ if __name__ == "__main__":
     threading.Thread(target=background, daemon=True).start()
     log(f"dojo-feed on http://127.0.0.1:{PORT}, videos on {lan_url() or 'no LAN'}")
     restart_on_change(Path(__file__).parent, log=log)  # new code -> exit, NSSM starts it again (no admin needed)
-    ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+    stop_announce = announce.announce(PORT, log)
+    try:
+        ThreadingHTTPServer(("", PORT), Handler).serve_forever()
+    finally:
+        if stop_announce:
+            stop_announce()
