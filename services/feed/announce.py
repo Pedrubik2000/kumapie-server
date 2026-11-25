@@ -34,9 +34,13 @@ def _register(ip: str, port: int, instance: str):
 def _unregister(zc, info, log):
     try:
         zc.unregister_service(info)
-        zc.close()
     except Exception as e:
         log(f"mDNS unregister failed: {e!r}")
+    finally:
+        try:
+            zc.close()
+        except Exception as e:
+            log(f"mDNS close failed: {e!r}")
 
 
 def announce(port: int, log=print):
