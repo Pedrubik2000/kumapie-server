@@ -387,7 +387,6 @@ def lan_url() -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    timeout = 30  # a request that promises more bytes than it sends can't hold a thread forever
     def send_error(self, code, message=None, explain=None):
         # The status line is latin-1 (http.server encodes it strictly): a reason with a Japanese path or title
         # (ffmpeg's command in /api/tv/cut) raised UnicodeEncodeError and the device got no answer. The body keeps it whole.
@@ -632,6 +631,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         if path == "/api/crash":
+            self.connection.settimeout(30)  # a lying Content-Length can't hold this thread forever (only here: TV video connections idle long)
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
