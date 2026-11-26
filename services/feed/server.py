@@ -387,6 +387,7 @@ def lan_url() -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = 30  # a request that promises more bytes than it sends can't hold a thread forever
     def send_error(self, code, message=None, explain=None):
         # The status line is latin-1 (http.server encodes it strictly): a reason with a Japanese path or title
         # (ffmpeg's command in /api/tv/cut) raised UnicodeEncodeError and the device got no answer. The body keeps it whole.
@@ -631,7 +632,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         if path == "/api/crash":
-            code, out = crashes.receive(self.client_address[0], int(self.headers.get("Content-Length") or 0), self.rfile.read)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self.send_error(400, "bad length")
+            code, out = crashes.receive(self.client_address[0], length, self.rfile.read)
             if code != 200:
                 return self.send_error(code, out["error"])
             return self.send_json(out)
