@@ -70,10 +70,13 @@ import anilist  # noqa: E402
 import voice  # noqa: E402
 import sensepick  # noqa: E402
 import characters  # noqa: E402
+import crashes  # noqa: E402
 
 F = cfg.raw["feed"]
 PORT = cfg.services["feed_port"]
 STATE = cfg.state / "feed"
+crashes.DIR = STATE / "crashes"
+crashes.log = lambda m: log(m)
 DB = STATE / "feed.db"
 TTS = STATE / "tts"
 STATIC = Path(__file__).parent / "static"
@@ -393,7 +396,8 @@ class Handler(BaseHTTPRequestHandler):
     def parse_request(self):
         # Everything comes through Tailscale Serve (from 127.0.0.1). Straight from the home network: an episode's video only.
         ok = super().parse_request()
-        if ok and self.client_address[0] != "127.0.0.1" and not (self.command == "GET" and re.match(r"/api/tv/video/[\w-]+$", self.path)):
+        if ok and self.client_address[0] != "127.0.0.1" and not (self.command == "GET" and re.match(r"/api/tv/video/[\w-]+$", self.path)) \
+                and not (self.command == "POST" and self.path == "/api/crash" and crashes.allowed(self.client_address[0])):  # crash reports straight from the LAN / Tailscale
             self.send_error(403)
             return False
         return ok
@@ -626,6 +630,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if path == "/api/crash":
+            code, out = crashes.receive(self.client_address[0], int(self.headers.get("Content-Length") or 0), self.rfile.read)
+            if code != 200:
+                return self.send_error(code, out["error"])
+            return self.send_json(out)
         parts = path.split("/")[3:] if path.startswith("/api/sync/") else []
         if len(parts) == 3 and parts[2] == "done" and sync.valid(parts[0], parts[1]):
             try:
