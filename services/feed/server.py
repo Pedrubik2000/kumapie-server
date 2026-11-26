@@ -76,6 +76,7 @@ F = cfg.raw["feed"]
 PORT = cfg.services["feed_port"]
 STATE = cfg.state / "feed"
 crashes.DIR = STATE / "crashes"
+crashes.REPORT_DIR = STATE / "reports"
 crashes.log = lambda m: log(m)
 DB = STATE / "feed.db"
 TTS = STATE / "tts"
@@ -397,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
         # Everything comes through Tailscale Serve (from 127.0.0.1). Straight from the home network: an episode's video only.
         ok = super().parse_request()
         if ok and self.client_address[0] != "127.0.0.1" and not (self.command == "GET" and re.match(r"/api/tv/video/[\w-]+$", self.path)) \
-                and not (self.command == "POST" and self.path == "/api/crash" and crashes.allowed(self.client_address[0])):  # crash reports straight from the LAN / Tailscale
+                and not (self.command == "POST" and self.path in ("/api/crash", "/api/report") and crashes.allowed(self.client_address[0])):  # crash and subtitle reports straight from the LAN / Tailscale
             self.send_error(403)
             return False
         return ok
@@ -630,13 +631,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0]
-        if path == "/api/crash":
+        if path in ("/api/crash", "/api/report"):
             self.connection.settimeout(30)  # a lying Content-Length can't hold this thread forever (only here: TV video connections idle long)
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 return self.send_error(400, "bad length")
-            code, out = crashes.receive(self.client_address[0], length, self.rfile.read)
+            code, out = (crashes.receive if path == "/api/crash" else crashes.receive_report)(self.client_address[0], length, self.rfile.read)
             if code != 200:
                 return self.send_error(code, out["error"])
             return self.send_json(out)
